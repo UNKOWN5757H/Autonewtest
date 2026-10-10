@@ -9,8 +9,6 @@ from logging import ERROR, INFO, getLogger
 from typing import Dict, Tuple
 
 import requests
-from database.ia_filterdb import Media as _Media
-from database.ia_filterdb import save_batch, unpack_new_file_id
 from motor.motor_asyncio import AsyncIOMotorClient
 from pyrogram import Client, StopPropagation, enums, filters
 from pyrogram.errors import (
@@ -36,6 +34,8 @@ from pyrogram.types import (
 )
 
 import info
+from database.ia_filterdb import Media as _Media
+from database.ia_filterdb import save_batch, unpack_new_file_id
 
 # 👑 IMPORTING THE GOD-TIER UNIVERSAL ADMIN ENGINE
 from utils import admin_filter, get_admin_list, get_uid, temp

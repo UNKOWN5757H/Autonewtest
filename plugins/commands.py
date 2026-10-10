@@ -10,10 +10,6 @@ from logging import ERROR, getLogger
 from typing import Optional
 
 import requests
-from database.ia_filterdb import Media as _Media
-from database.ia_filterdb import get_file_details, unpack_new_file_id
-from database.plugin_dbs import plugin_db as _plugin_db
-from database.users_chats_db import db as _db
 from motor.motor_asyncio import AsyncIOMotorClient
 from pyrogram import Client, enums, filters
 from pyrogram.errors import (
@@ -37,6 +33,10 @@ from pyrogram.types import (
 )
 
 import info
+from database.ia_filterdb import Media as _Media
+from database.ia_filterdb import get_file_details, unpack_new_file_id
+from database.plugin_dbs import plugin_db as _plugin_db
+from database.users_chats_db import db as _db
 from info import CUSTOM_FILE_CAPTION, LOG_CHANNEL, PICS
 from plugins.custom_settings import get_bot_settings, get_group_welcome
 from plugins.fsubchannels import ForceSub  # Updated to the new merged FSub file!
