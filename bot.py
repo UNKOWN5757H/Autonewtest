@@ -32,14 +32,14 @@ from logging import ERROR, INFO, basicConfig, getLogger
 from logging.config import fileConfig
 
 from aiohttp import web
-from pyrogram import Client, __version__, filters, idle, types
-from pyrogram.raw.all import layer
-from pyrogram.types import Message
-
 from database.ia_filterdb import Media
 from database.plugin_dbs import plugin_db
 from database.users_chats_db import db as old_db
 from info import API_HASH, API_ID, BOT_TOKEN, LOG_STR, PORT, SESSION
+from pyrogram import Client, __version__, filters, idle, types
+from pyrogram.raw.all import layer
+from pyrogram.types import Message
+
 from utils import temp
 
 # ============================================================
@@ -82,16 +82,19 @@ class Bot(Client):
         b_users = []
         b_chats = []
         try:
+
             async def fetch_bans():
                 if hasattr(old_db, "grp"):
-                    async for chat in old_db.grp.find({"chat_status.is_disabled": True}):
+                    async for chat in old_db.grp.find(
+                        {"chat_status.is_disabled": True}
+                    ):
                         if chat.get("id"):
                             b_chats.append(chat["id"])
-                
+
                 async for user in plugin_db.ban_col.find({}):
                     if user.get("_id"):
                         b_users.append(user["_id"])
-                        
+
                 if hasattr(old_db, "col"):
                     async for user in old_db.col.find({"ban_status.is_banned": True}):
                         u_id = user.get("id")
