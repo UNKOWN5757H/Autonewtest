@@ -1,0 +1,32 @@
+# --- Core Telegram Framework ---
+kurigram@git+https://github.com/KurimuzonAkuma/pyrogram.git
+tgcrypto==1.2.5
+
+# --- MongoDB Async Drivers ---
+pymongo[srv]==4.6.3
+motor==3.3.2
+dnspython==2.7.0
+
+# --- Data Serialization / ODM ---
+marshmallow==3.26.2
+umongo==3.1.0
+
+# --- IMDb & Media Info ---
+cinemagoer==2023.5.1  
+Pillow
+
+# --- HTTP Clients & Scraping ---
+aiohttp
+requests
+beautifulsoup4
+
+# --- Search / Typo Tolerance ---
+thefuzz
+Levenshtein
+
+# --- External Utilities ---
+yt-dlp
+psutil
+
+# --- Optional Performance Optimizer ---
+uvloop==0.20.0; platform_system != "Windows"
