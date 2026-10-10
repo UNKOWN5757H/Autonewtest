@@ -165,6 +165,7 @@ OTT_PLATFORMS = [
 
 try:
     from pyrogram.enums import ButtonStyle
+
     BTN_PRIMARY, BTN_SUCCESS, BTN_DANGER, BTN_SECONDARY = (
         getattr(ButtonStyle, "PRIMARY", 1),
         getattr(ButtonStyle, "SUCCESS", 3),
@@ -646,20 +647,14 @@ async def process_single_auto_post(client: Client, message: Message):
                     )
                 ],
                 [
-                    create_btn(
-                        "✏️ Edit Text", callback_data=f"ap_edit_1", style=1
-                    ),
+                    create_btn("✏️ Edit Text", callback_data=f"ap_edit_1", style=1),
                     create_btn(
                         "📸 Edit Image",
                         callback_data=f"ap_editimg_1",
                         style=1,
                     ),
                 ],
-                [
-                    create_btn(
-                        "❌ Cancel", callback_data=f"ap_cancel_1", style=4
-                    )
-                ],
+                [create_btn("❌ Cancel", callback_data=f"ap_cancel_1", style=4)],
             ]
         )
 
