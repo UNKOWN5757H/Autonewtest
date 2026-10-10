@@ -165,7 +165,6 @@ OTT_PLATFORMS = [
 
 try:
     from pyrogram.enums import ButtonStyle
-
     BTN_PRIMARY, BTN_SUCCESS, BTN_DANGER, BTN_SECONDARY = (
         getattr(ButtonStyle, "PRIMARY", 1),
         getattr(ButtonStyle, "SUCCESS", 3),
@@ -183,7 +182,13 @@ def create_btn(text, url=None, callback_data=None, style=None):
     if callback_data:
         kwargs["callback_data"] = callback_data
     if style is not None:
-        kwargs["style"] = style
+        if isinstance(style, int):
+            try:
+                kwargs["style"] = ButtonStyle(style)
+            except Exception:
+                kwargs["style"] = style
+        else:
+            kwargs["style"] = style
     try:
         return InlineKeyboardButton(**kwargs)
     except TypeError:
@@ -600,7 +605,7 @@ async def process_single_auto_post(client: Client, message: Message):
                     create_btn(
                         btn1["text"],
                         url=btn1["url"].replace("{deep_link}", deep_link),
-                        style=BTN_PRIMARY,
+                        style=1,
                     )
                 )
             if btn2:
@@ -608,7 +613,7 @@ async def process_single_auto_post(client: Client, message: Message):
                     create_btn(
                         btn2["text"],
                         url=btn2["url"].replace("{deep_link}", deep_link),
-                        style=BTN_PRIMARY,
+                        style=1,
                     )
                 )
             btn_layout.append(row)
@@ -618,7 +623,7 @@ async def process_single_auto_post(client: Client, message: Message):
                     create_btn(
                         btn3["text"],
                         url=btn3["url"].replace("{deep_link}", deep_link),
-                        style=BTN_SUCCESS,
+                        style=3,
                     )
                 ]
             )
@@ -637,22 +642,22 @@ async def process_single_auto_post(client: Client, message: Message):
                     create_btn(
                         "✅ Post to Channel",
                         callback_data=f"ap_post_1",
-                        style=BTN_SUCCESS,
+                        style=3,
                     )
                 ],
                 [
                     create_btn(
-                        "✏️ Edit Text", callback_data=f"ap_edit_1", style=BTN_PRIMARY
+                        "✏️ Edit Text", callback_data=f"ap_edit_1", style=1
                     ),
                     create_btn(
                         "📸 Edit Image",
                         callback_data=f"ap_editimg_1",
-                        style=BTN_PRIMARY,
+                        style=1,
                     ),
                 ],
                 [
                     create_btn(
-                        "❌ Cancel", callback_data=f"ap_cancel_1", style=BTN_DANGER
+                        "❌ Cancel", callback_data=f"ap_cancel_1", style=4
                     )
                 ],
             ]
@@ -675,7 +680,7 @@ async def process_single_auto_post(client: Client, message: Message):
         msg_id_str = str(ask_msg.id)
         PENDING_AP[msg_id_str] = {
             "text": text,
-            "buttons": InlineKeyboardMarkup(btn_layout),
+            "buttons": btn_layout,
             "channels": update_channels,
             "sticker": settings.get("sticker"),
             "poster": poster,
@@ -788,7 +793,7 @@ async def extract_and_edit_live_post(client: Client, message: Message, edit_type
         elif edit_type == "buttoncolour":
             row_str, color_str = new_val.split(" ", 1)
             row_idx = int(row_str) - 1
-            color_map = {"green": BTN_SUCCESS, "red": BTN_DANGER, "blue": BTN_PRIMARY}
+            color_map = {"green": 3, "red": 4, "blue": 1}
             if (
                 reply_markup
                 and reply_markup.inline_keyboard
@@ -1034,7 +1039,7 @@ async def cmd_edit_btn_color(client: Client, message: Message):
     try:
         row_idx = int(message.command[1]) - 1
         color_str = message.command[2].lower()
-        color_map = {"green": BTN_SUCCESS, "red": BTN_DANGER, "blue": BTN_PRIMARY}
+        color_map = {"green": 3, "red": 4, "blue": 1}
         if color_str not in color_map:
             return await message.reply("❌ Invalid color. Use green, red, or blue.")
         if len(post_sessions[uid]["buttons"]) > row_idx:
@@ -1676,12 +1681,12 @@ def build_keyboard(session: dict, session_id: int):
                 create_btn(
                     "✅ Post",
                     callback_data=f"post:finalize:{session_id}",
-                    style=BTN_SUCCESS,
+                    style=3,
                 ),
                 create_btn(
                     "❌ Cancel",
                     callback_data=f"post:cancel:{session_id}",
-                    style=BTN_DANGER,
+                    style=4,
                 ),
             ],
         ]
@@ -1737,7 +1742,7 @@ async def show_target_selection(query: CallbackQuery, session_id: int, page: int
             create_btn(
                 "📢 Post to All Configured Channels",
                 callback_data=f"post:send_all:{session_id}",
-                style=BTN_SUCCESS,
+                style=3,
             )
         ]
     ]
@@ -1747,7 +1752,7 @@ async def show_target_selection(query: CallbackQuery, session_id: int, page: int
                 create_btn(
                     title,
                     callback_data=f"post:send_to:{session_id}:{chat_id}",
-                    style=BTN_PRIMARY,
+                    style=1,
                 )
             ]
         )
@@ -1758,7 +1763,7 @@ async def show_target_selection(query: CallbackQuery, session_id: int, page: int
             create_btn(
                 "⬅️ Prev",
                 callback_data=f"post:target_page:{session_id}:{page-1}",
-                style=BTN_SECONDARY,
+                style=2,
             )
         )
     if page < total_pages:
@@ -1766,7 +1771,7 @@ async def show_target_selection(query: CallbackQuery, session_id: int, page: int
             create_btn(
                 "Next ➡️",
                 callback_data=f"post:target_page:{session_id}:{page+1}",
-                style=BTN_SECONDARY,
+                style=2,
             )
         )
 
@@ -1777,7 +1782,7 @@ async def show_target_selection(query: CallbackQuery, session_id: int, page: int
             create_btn(
                 "🔙 Back to Editor",
                 callback_data=f"post:back_editor:{session_id}",
-                style=BTN_DANGER,
+                style=4,
             )
         ]
     )
@@ -2320,16 +2325,16 @@ async def handle_add_get_files(
             {
                 "text": "Group 1 🎬",
                 "url": "https://t.me/Sandalwood_Kannada_Group",
-                "style": BTN_PRIMARY,
+                "style": 1,
             },
             {
                 "text": "Group 2 🎬",
                 "url": "https://t.me/+GLsPkRgLGGszMzY1",
-                "style": BTN_PRIMARY,
+                "style": 1,
             },
         ]
     )
-    session["buttons"].append([{"text": btn_text, "url": url, "style": BTN_SUCCESS}])
+    session["buttons"].append([{"text": btn_text, "url": url, "style": 3}])
     return True
 
 
