@@ -6,7 +6,10 @@ import re
 import time
 from logging import ERROR, getLogger
 
+import info
 from bson.json_util import dumps, loads
+from database.plugin_dbs import plugin_db as _plugin_db
+from database.users_chats_db import db as _db
 from motor.motor_asyncio import AsyncIOMotorClient
 from pyrogram import Client, filters
 from pyrogram.errors import (
@@ -19,10 +22,6 @@ from pyrogram.errors import (
     UserIsBlocked,
 )
 from pyrogram.types import InlineKeyboardButton, Message
-
-import info
-from database.plugin_dbs import plugin_db as _plugin_db
-from database.users_chats_db import db as _db
 
 # 👑 IMPORTING THE GOD-TIER UNIVERSAL ADMIN ENGINE
 from utils import admin_filter, get_admin_list, get_uid
@@ -54,35 +53,58 @@ _WORKER_TASK = None
 if not hasattr(info, "REPAIR_MODE"):
     info.REPAIR_MODE = False
 
+
 # ============================================================
 # 🛠️ BOT SETTINGS & REPAIR MODE (/repairmode, /adminsettings)
 # ============================================================
-@Client.on_message(filters.command("repairmode") & admin_filter & (filters.private | filters.group))
+@Client.on_message(
+    filters.command("repairmode") & admin_filter & (filters.private | filters.group)
+)
 async def toggle_repair_mode(bot: Client, message: Message):
     if len(message.command) > 1:
         arg = message.command[1].lower()
-        if arg in ["on", "true", "enable"]: info.REPAIR_MODE = True
-        elif arg in ["off", "false", "disable"]: info.REPAIR_MODE = False
-        else: info.REPAIR_MODE = not getattr(info, "REPAIR_MODE", False)
+        if arg in ["on", "true", "enable"]:
+            info.REPAIR_MODE = True
+        elif arg in ["off", "false", "disable"]:
+            info.REPAIR_MODE = False
+        else:
+            info.REPAIR_MODE = not getattr(info, "REPAIR_MODE", False)
     else:
         info.REPAIR_MODE = not getattr(info, "REPAIR_MODE", False)
 
     status = "🟢 **ENABLED**" if info.REPAIR_MODE else "🔴 **DISABLED**"
     text = f"🛠️ **Repair Mode is now {status}**\n\n"
-    if info.REPAIR_MODE: text += "⚠️ *The bot is now in maintenance mode. It will NOT send any files to users until this is disabled.*"
-    else: text += "✅ *The bot has returned to normal operation and will process file requests.*"
+    if info.REPAIR_MODE:
+        text += "⚠️ *The bot is now in maintenance mode. It will NOT send any files to users until this is disabled.*"
+    else:
+        text += "✅ *The bot has returned to normal operation and will process file requests.*"
 
     await message.reply_text(text)
 
-@Client.on_message(filters.command("adminsettings") & admin_filter & (filters.private | filters.group))
+
+@Client.on_message(
+    filters.command("adminsettings") & admin_filter & (filters.private | filters.group)
+)
 async def show_admin_settings(bot: Client, message: Message):
-    repair_status = "🟢 ENABLED" if getattr(info, "REPAIR_MODE", False) else "🔴 DISABLED"
-    fsub_status = "🟢 ENABLED" if getattr(info, "IS_FSUB_ENABLED", True) else "🔴 DISABLED"
+    repair_status = (
+        "🟢 ENABLED" if getattr(info, "REPAIR_MODE", False) else "🔴 DISABLED"
+    )
+    fsub_status = (
+        "🟢 ENABLED" if getattr(info, "IS_FSUB_ENABLED", True) else "🔴 DISABLED"
+    )
 
     text = "⚙️ **Current Admin Settings Dashboard**\n━━━━━━━━━━━━━━━━━━━━━\n\n"
     text += f"🛠️ **Repair Mode:** {repair_status}\n🔐 **Force Subscribe:** {fsub_status}\n\n"
-    text += f"📢 **Main FSub Channel:** <code>{info.AUTH_CHANNEL}</code>\n" if getattr(info, "AUTH_CHANNEL", None) else "📢 **Main FSub Channel:** ❌ Not Set\n"
-    text += f"📨 **Request FSub Channel:** <code>{info.REQ_CHANNEL}</code>\n" if getattr(info, "REQ_CHANNEL", None) else "📨 **Request FSub Channel:** ❌ Not Set\n"
+    text += (
+        f"📢 **Main FSub Channel:** <code>{info.AUTH_CHANNEL}</code>\n"
+        if getattr(info, "AUTH_CHANNEL", None)
+        else "📢 **Main FSub Channel:** ❌ Not Set\n"
+    )
+    text += (
+        f"📨 **Request FSub Channel:** <code>{info.REQ_CHANNEL}</code>\n"
+        if getattr(info, "REQ_CHANNEL", None)
+        else "📨 **Request FSub Channel:** ❌ Not Set\n"
+    )
 
     admin_count = len(get_admin_list())
     text += f"\n👥 **Total Admins Configured:** `{admin_count}`\n\n━━━━━━━━━━━━━━━━━━━━━\n💡 *Use commands like `/repairmode` or `/disablefsub` to toggle these values.*"
@@ -103,13 +125,18 @@ async def auto_backup_task(bot: Client):
         next_backup_time = last_backup_time + BACKUP_INTERVAL
         await asyncio.sleep(BACKUP_INTERVAL)
 
-        if not _BOT_DB or not target_admin_id: continue
+        if not _BOT_DB or not target_admin_id:
+            continue
         try:
             file_path = await generate_backup_file()
             caption = f"🔄 **Automated Daily Database Backup**\n\n📅 Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            await bot.send_document(chat_id=target_admin_id, document=file_path, caption=caption)
+            await bot.send_document(
+                chat_id=target_admin_id, document=file_path, caption=caption
+            )
             os.remove(file_path)
-        except Exception as e: logger.error(f"Auto-backup failed: {e}")
+        except Exception as e:
+            logger.error(f"Auto-backup failed: {e}")
+
 
 async def generate_backup_file() -> str:
     collections = await _BOT_DB.list_collection_names()
@@ -119,8 +146,10 @@ async def generate_backup_file() -> str:
         backup_data[coll_name] = docs
 
     file_name = f"DB_Backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    with open(file_name, "w", encoding="utf-8") as f: f.write(dumps(backup_data, indent=4))
+    with open(file_name, "w", encoding="utf-8") as f:
+        f.write(dumps(backup_data, indent=4))
     return file_name
+
 
 @Client.on_message(filters.command("dbbackup") & admin_filter)
 async def db_backup_cmd(bot: Client, message: Message):
@@ -131,19 +160,25 @@ async def db_backup_cmd(bot: Client, message: Message):
         await message.reply_document(document=file_path, caption=caption)
         os.remove(file_path)
         await status_msg.delete()
-    except Exception as e: await status_msg.edit_text(f"⚠️ **Backup Failed!**\n\nError: `{e}`")
+    except Exception as e:
+        await status_msg.edit_text(f"⚠️ **Backup Failed!**\n\nError: `{e}`")
+
 
 @Client.on_message(filters.command("dbrestore") & admin_filter)
 async def db_restore_cmd(bot: Client, message: Message):
     if not message.reply_to_message or not message.reply_to_message.document:
-        return await message.reply_text("⚙️ **Usage:**\nReply to a previously generated backup `.json` file with `/dbrestore`.")
+        return await message.reply_text(
+            "⚙️ **Usage:**\nReply to a previously generated backup `.json` file with `/dbrestore`."
+        )
     doc = message.reply_to_message.document
-    if not doc.file_name.endswith(".json"): return await message.reply_text("❌ **Invalid File Format!**")
+    if not doc.file_name.endswith(".json"):
+        return await message.reply_text("❌ **Invalid File Format!**")
 
     status_msg = await message.reply_text("⏳ **Restoring database...**")
     try:
         file_path = await message.reply_to_message.download()
-        with open(file_path, "r", encoding="utf-8") as f: backup_data = loads(f.read())
+        with open(file_path, "r", encoding="utf-8") as f:
+            backup_data = loads(f.read())
         restored_colls = restored_docs = 0
 
         for coll_name, docs in backup_data.items():
@@ -154,10 +189,14 @@ async def db_restore_cmd(bot: Client, message: Message):
                 restored_docs += len(docs)
 
         os.remove(file_path)
-        await status_msg.edit_text(f"✅ **Database Restored Successfully!**\n\n📁 **Collections:** `{restored_colls}`\n📄 **Documents:** `{restored_docs}`")
+        await status_msg.edit_text(
+            f"✅ **Database Restored Successfully!**\n\n📁 **Collections:** `{restored_colls}`\n📄 **Documents:** `{restored_docs}`"
+        )
     except Exception as e:
         await status_msg.edit_text(f"⚠️ **Restore Failed!**\n\nError: `{e}`")
-        if "file_path" in locals() and os.path.exists(file_path): os.remove(file_path)
+        if "file_path" in locals() and os.path.exists(file_path):
+            os.remove(file_path)
+
 
 @Client.on_message(filters.command("dbstats") & admin_filter)
 async def db_stats_cmd(bot: Client, message: Message):
@@ -171,53 +210,89 @@ async def db_stats_cmd(bot: Client, message: Message):
             count = await _BOT_DB[coll].count_documents({})
             text += f"  - `{coll}`: {count} docs\n"
         await message.reply_text(text)
-    except Exception as e: await message.reply_text(f"⚠️ **Failed to fetch stats:**\n`{e}`")
+    except Exception as e:
+        await message.reply_text(f"⚠️ **Failed to fetch stats:**\n`{e}`")
+
 
 @Client.on_message(filters.command("dbschedule") & admin_filter)
 async def db_schedule_cmd(bot: Client, message: Message):
     if not scheduler_running:
         asyncio.create_task(auto_backup_task(bot))
-        return await message.reply_text("✅ **Auto-backup scheduler initiated!**\nThe first automated backup will run in 24 hours.")
+        return await message.reply_text(
+            "✅ **Auto-backup scheduler initiated!**\nThe first automated backup will run in 24 hours."
+        )
 
     if next_backup_time:
         time_left = next_backup_time - time.time()
         hours, remainder = divmod(int(time_left), 3600)
         minutes, seconds = divmod(remainder, 60)
-        await message.reply_text(f"⏰ **Scheduled Backup Status**\n\n🟢 **Status:** `Active`\n⏳ **Next Backup In:** `{hours}h {minutes}m {seconds}s`")
-    else: await message.reply_text("⏰ Scheduler is active but time is calculating...")
+        await message.reply_text(
+            f"⏰ **Scheduled Backup Status**\n\n🟢 **Status:** `Active`\n⏳ **Next Backup In:** `{hours}h {minutes}m {seconds}s`"
+        )
+    else:
+        await message.reply_text("⏰ Scheduler is active but time is calculating...")
 
 
 # ============================================================
 # 📢 INLINE PROMOTIONS ENGINE (/addpromo, /delpromo)
 # ============================================================
-@Client.on_message(filters.command("addpromo") & admin_filter & (filters.private | filters.group))
+@Client.on_message(
+    filters.command("addpromo") & admin_filter & (filters.private | filters.group)
+)
 async def add_promo_handler(bot: Client, message: Message):
     text = message.text.split(None, 1)[1] if len(message.command) > 1 else ""
     match = re.search(r'"([^"]+)"\s+(https?://\S+)', text)
 
     if not match:
-        return await message.reply_text('⚙️ **Usage:**\n`/addpromo "Button Text" https://example.com`\n\n⚠️ Ensure the button text is inside double quotes `" "` followed by a valid URL.')
+        return await message.reply_text(
+            '⚙️ **Usage:**\n`/addpromo "Button Text" https://example.com`\n\n⚠️ Ensure the button text is inside double quotes `" "` followed by a valid URL.'
+        )
 
     btn_text, btn_url = match.group(1), match.group(2)
     await _plugin_db.add_promo(btn_text, btn_url)
-    await message.reply_text(f"✅ **Promo Added Successfully!**\n\n**Text:** `{btn_text}`\n**URL:** {btn_url}", disable_web_page_preview=True)
+    await message.reply_text(
+        f"✅ **Promo Added Successfully!**\n\n**Text:** `{btn_text}`\n**URL:** {btn_url}",
+        disable_web_page_preview=True,
+    )
 
-@Client.on_message(filters.command("delpromo") & admin_filter & (filters.private | filters.group))
+
+@Client.on_message(
+    filters.command("delpromo") & admin_filter & (filters.private | filters.group)
+)
 async def del_promo_handler(bot: Client, message: Message):
-    if len(message.command) < 2: return await message.reply_text("⚙️ **Usage:**\n`/delpromo https://example.com`")
+    if len(message.command) < 2:
+        return await message.reply_text(
+            "⚙️ **Usage:**\n`/delpromo https://example.com`"
+        )
     btn_url = message.command[1]
     deleted = await _plugin_db.del_promo(btn_url)
-    if deleted: await message.reply_text(f"🗑️ **Promo deleted successfully!**\n\n**URL:** {btn_url}", disable_web_page_preview=True)
-    else: await message.reply_text(f"❌ **Promo not found!**\nCould not find any promo matching URL: {btn_url}", disable_web_page_preview=True)
+    if deleted:
+        await message.reply_text(
+            f"🗑️ **Promo deleted successfully!**\n\n**URL:** {btn_url}",
+            disable_web_page_preview=True,
+        )
+    else:
+        await message.reply_text(
+            f"❌ **Promo not found!**\nCould not find any promo matching URL: {btn_url}",
+            disable_web_page_preview=True,
+        )
 
-@Client.on_message(filters.command("listpromos") & admin_filter & (filters.private | filters.group))
+
+@Client.on_message(
+    filters.command("listpromos") & admin_filter & (filters.private | filters.group)
+)
 async def list_promo_handler(bot: Client, message: Message):
     promos = await _plugin_db.get_all_promos()
-    if not promos: return await message.reply_text("⚠️ **No active promotional links found in the database.**")
+    if not promos:
+        return await message.reply_text(
+            "⚠️ **No active promotional links found in the database.**"
+        )
 
     text = "📢 **Current Promotional Links:**\n\n"
-    for i, p in enumerate(promos, 1): text += f"**{i}. Text:** `{p['text']}`\n**🔗 URL:** {p['url']}\n\n"
+    for i, p in enumerate(promos, 1):
+        text += f"**{i}. Text:** `{p['text']}`\n**🔗 URL:** {p['url']}\n\n"
     await message.reply_text(text, disable_web_page_preview=True)
+
 
 async def get_promo_buttons() -> list:
     promos = await _plugin_db.get_all_promos()
@@ -228,10 +303,12 @@ async def get_promo_buttons() -> list:
 # 📤 BROADCAST ENGINE (/broadcast, /group_broadcast)
 # ============================================================
 def get_progress_bar(current, total):
-    if total == 0: return "[░░░░░░░░░░] 0.0%"
+    if total == 0:
+        return "[░░░░░░░░░░] 0.0%"
     percent = (current / total) * 100
     filled = int(percent / 10)
     return f"[{'█' * filled}{'░' * (10 - filled)}] {percent:.1f}%"
+
 
 async def bcast_cleaner_worker(bot: Client):
     while True:
@@ -240,11 +317,17 @@ async def bcast_cleaner_worker(bot: Client):
             cursor = _broadcast_col.find({"delete_at": {"$lte": now}})
             docs = await cursor.to_list(length=100)
             for doc in docs:
-                try: await bot.delete_messages(chat_id=doc["chat_id"], message_ids=doc["message_id"])
-                except Exception: pass
+                try:
+                    await bot.delete_messages(
+                        chat_id=doc["chat_id"], message_ids=doc["message_id"]
+                    )
+                except Exception:
+                    pass
                 await _broadcast_col.delete_one({"_id": doc["_id"]})
-        except Exception: pass
+        except Exception:
+            pass
         await asyncio.sleep(60)
+
 
 @Client.on_message(filters.group | filters.private, group=-100)
 async def init_worker(bot: Client, message):
@@ -253,51 +336,100 @@ async def init_worker(bot: Client, message):
         worker_started = True
         _WORKER_TASK = asyncio.create_task(bcast_cleaner_worker(bot))
 
+
 async def send_and_schedule_delete(bot: Client, chat_id: int, message: Message):
     try:
         sent_msg = None
-        try: sent_msg = await message.copy(chat_id=chat_id, disable_notification=True)
+        try:
+            sent_msg = await message.copy(chat_id=chat_id, disable_notification=True)
         except FloodWait as e:
             await asyncio.sleep(e.value + 1)
             sent_msg = await message.copy(chat_id=chat_id, disable_notification=True)
         except Exception:
-            try: sent_msg = await message.forward(chat_id=chat_id, disable_notification=True)
+            try:
+                sent_msg = await message.forward(
+                    chat_id=chat_id, disable_notification=True
+                )
             except FloodWait as e:
                 await asyncio.sleep(e.value + 1)
-                sent_msg = await message.forward(chat_id=chat_id, disable_notification=True)
+                sent_msg = await message.forward(
+                    chat_id=chat_id, disable_notification=True
+                )
             except Exception:
-                if message.photo: sent_msg = await bot.send_photo(chat_id, message.photo.file_id, caption=message.caption, disable_notification=True)
-                elif message.video: sent_msg = await bot.send_video(chat_id, message.video.file_id, caption=message.caption, disable_notification=True)
-                elif message.document: sent_msg = await bot.send_document(chat_id, message.document.file_id, caption=message.caption, disable_notification=True)
-                else: sent_msg = await bot.send_message(chat_id, message.text, disable_notification=True)
+                if message.photo:
+                    sent_msg = await bot.send_photo(
+                        chat_id,
+                        message.photo.file_id,
+                        caption=message.caption,
+                        disable_notification=True,
+                    )
+                elif message.video:
+                    sent_msg = await bot.send_video(
+                        chat_id,
+                        message.video.file_id,
+                        caption=message.caption,
+                        disable_notification=True,
+                    )
+                elif message.document:
+                    sent_msg = await bot.send_document(
+                        chat_id,
+                        message.document.file_id,
+                        caption=message.caption,
+                        disable_notification=True,
+                    )
+                else:
+                    sent_msg = await bot.send_message(
+                        chat_id, message.text, disable_notification=True
+                    )
 
         if sent_msg:
-            await _broadcast_col.insert_one({"chat_id": chat_id, "message_id": sent_msg.id, "delete_at": time.time() + DELETE_DELAY})
+            await _broadcast_col.insert_one(
+                {
+                    "chat_id": chat_id,
+                    "message_id": sent_msg.id,
+                    "delete_at": time.time() + DELETE_DELAY,
+                }
+            )
             return 200, None
         return 500, "Unknown Error"
 
     except FloodWait as e:
         await asyncio.sleep(e.value + 1)
         return await send_and_schedule_delete(bot, chat_id, message)
-    except (UserIsBlocked, InputUserDeactivated, UserDeactivatedBan): return 400, "Blocked/Deleted"
-    except PeerIdInvalid: return 400, "Invalid"
-    except ChatWriteForbidden: return 400, "Left"
-    except MessageTooLong: return 400, "MEDIA_CAPTION_TOO_LONG"
-    except Exception as e: return 500, str(e)
+    except (UserIsBlocked, InputUserDeactivated, UserDeactivatedBan):
+        return 400, "Blocked/Deleted"
+    except PeerIdInvalid:
+        return 400, "Invalid"
+    except ChatWriteForbidden:
+        return 400, "Left"
+    except MessageTooLong:
+        return 400, "MEDIA_CAPTION_TOO_LONG"
+    except Exception as e:
+        return 500, str(e)
+
 
 @Client.on_message(filters.command("broadcast") & admin_filter & filters.reply)
 async def user_broadcast(bot: Client, message: Message):
     b_msg = message.reply_to_message
-    if not b_msg: return await message.reply_text("⚠️ **Reply to the message you want to broadcast.**")
+    if not b_msg:
+        return await message.reply_text(
+            "⚠️ **Reply to the message you want to broadcast.**"
+        )
 
     status_msg = await message.reply_text("⏳ **Fetching user database...**")
     try:
         users_cursor = await _db.get_all_users()
-        users = await users_cursor.to_list(length=None) if hasattr(users_cursor, "to_list") else list(users_cursor)
-    except Exception as e: return await status_msg.edit_text(f"❌ **Database Error:** `{e}`")
+        users = (
+            await users_cursor.to_list(length=None)
+            if hasattr(users_cursor, "to_list")
+            else list(users_cursor)
+        )
+    except Exception as e:
+        return await status_msg.edit_text(f"❌ **Database Error:** `{e}`")
 
     total_users = len(users)
-    if total_users == 0: return await status_msg.edit_text("⚠️ **No users found in the database.**")
+    if total_users == 0:
+        return await status_msg.edit_text("⚠️ **No users found in the database.**")
 
     await status_msg.edit_text(f"🚀 **Broadcasting to {total_users} users...**")
     start_time = time.time()
@@ -307,37 +439,59 @@ async def user_broadcast(bot: Client, message: Message):
         user_id = int(user.get("id") or user.get("user_id"))
         status, _ = await send_and_schedule_delete(bot, user_id, b_msg)
 
-        if status == 200: success += 1
+        if status == 200:
+            success += 1
         elif status == 400:
             blocked += 1
             await _db.delete_user(user_id)
-        else: failed += 1
+        else:
+            failed += 1
 
         done += 1
         if done % 25 == 0 or done == total_users:
             try:
-                await status_msg.edit_text(f"📢 **User Broadcast Progress**\n{get_progress_bar(done, total_users)}\n\n👥 **Total:** `{total_users}`\n✅ **Sent:** `{success}`\n🚫 **Dead/Blocked:** `{blocked}`\n⚠️ **Failed:** `{failed}`\n📦 **Processed:** `{done}/{total_users}`")
-            except FloodWait as e: await asyncio.sleep(e.value + 1)
-            except Exception: pass
+                await status_msg.edit_text(
+                    f"📢 **User Broadcast Progress**\n{get_progress_bar(done, total_users)}\n\n👥 **Total:** `{total_users}`\n✅ **Sent:** `{success}`\n🚫 **Dead/Blocked:** `{blocked}`\n⚠️ **Failed:** `{failed}`\n📦 **Processed:** `{done}/{total_users}`"
+                )
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 1)
+            except Exception:
+                pass
         await asyncio.sleep(0.3)
 
     time_taken = datetime.timedelta(seconds=int(time.time() - start_time))
-    time_str = f"{DELETE_DELAY // 3600} hours" if DELETE_DELAY >= 3600 else f"{(DELETE_DELAY % 3600) // 60} minutes"
-    await status_msg.edit_text(f"✅ **User Broadcast Completed!**\n\n🕒 **Duration:** `{time_taken}`\n👥 **Total:** `{total_users}`\n✅ **Successful:** `{success}`\n🚫 **Removed (Dead):** `{blocked}`\n⚠️ **Failed:** `{failed}`\n\n⏳ *These messages will vanish silently in {time_str}.*")
+    time_str = (
+        f"{DELETE_DELAY // 3600} hours"
+        if DELETE_DELAY >= 3600
+        else f"{(DELETE_DELAY % 3600) // 60} minutes"
+    )
+    await status_msg.edit_text(
+        f"✅ **User Broadcast Completed!**\n\n🕒 **Duration:** `{time_taken}`\n👥 **Total:** `{total_users}`\n✅ **Successful:** `{success}`\n🚫 **Removed (Dead):** `{blocked}`\n⚠️ **Failed:** `{failed}`\n\n⏳ *These messages will vanish silently in {time_str}.*"
+    )
+
 
 @Client.on_message(filters.command("group_broadcast") & admin_filter & filters.reply)
 async def group_broadcast(bot: Client, message: Message):
     b_msg = message.reply_to_message
-    if not b_msg: return await message.reply_text("⚠️ **Reply to the message you want to broadcast.**")
+    if not b_msg:
+        return await message.reply_text(
+            "⚠️ **Reply to the message you want to broadcast.**"
+        )
 
     status_msg = await message.reply_text("⏳ **Fetching chat database...**")
     try:
         chats_cursor = await _db.get_all_chats()
-        chats = await chats_cursor.to_list(length=None) if hasattr(chats_cursor, "to_list") else list(chats_cursor)
-    except Exception as e: return await status_msg.edit_text(f"❌ **Database Error:** `{e}`")
+        chats = (
+            await chats_cursor.to_list(length=None)
+            if hasattr(chats_cursor, "to_list")
+            else list(chats_cursor)
+        )
+    except Exception as e:
+        return await status_msg.edit_text(f"❌ **Database Error:** `{e}`")
 
     total_chats = len(chats)
-    if total_chats == 0: return await status_msg.edit_text("⚠️ **No groups found in the database.**")
+    if total_chats == 0:
+        return await status_msg.edit_text("⚠️ **No groups found in the database.**")
 
     await status_msg.edit_text(f"🚀 **Broadcasting to {total_chats} groups...**")
     start_time = time.time()
@@ -347,21 +501,35 @@ async def group_broadcast(bot: Client, message: Message):
         chat_id = int(chat.get("id") or chat.get("chat_id"))
         status, reason = await send_and_schedule_delete(bot, chat_id, b_msg)
 
-        if status == 200: success += 1
+        if status == 200:
+            success += 1
         elif status == 400 and reason in ["Left", "Blocked/Deleted"]:
             left += 1
-            try: await _db.disable_chat(chat_id, "Bot Removed")
-            except Exception: pass
-        else: failed += 1
+            try:
+                await _db.disable_chat(chat_id, "Bot Removed")
+            except Exception:
+                pass
+        else:
+            failed += 1
 
         done += 1
         if done % 15 == 0 or done == total_chats:
             try:
-                await status_msg.edit_text(f"🏘️ **Group Broadcast Progress**\n{get_progress_bar(done, total_chats)}\n\n💬 **Total:** `{total_chats}`\n✅ **Sent:** `{success}`\n🚷 **Kicked/Left:** `{left}`\n⚠️ **Failed:** `{failed}`\n📦 **Processed:** `{done}/{total_chats}`")
-            except FloodWait as e: await asyncio.sleep(e.value + 1)
-            except Exception: pass
+                await status_msg.edit_text(
+                    f"🏘️ **Group Broadcast Progress**\n{get_progress_bar(done, total_chats)}\n\n💬 **Total:** `{total_chats}`\n✅ **Sent:** `{success}`\n🚷 **Kicked/Left:** `{left}`\n⚠️ **Failed:** `{failed}`\n📦 **Processed:** `{done}/{total_chats}`"
+                )
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 1)
+            except Exception:
+                pass
         await asyncio.sleep(0.5)
 
     time_taken = datetime.timedelta(seconds=int(time.time() - start_time))
-    time_str = f"{DELETE_DELAY // 3600} hours" if DELETE_DELAY >= 3600 else f"{(DELETE_DELAY % 3600) // 60} minutes"
-    await status_msg.edit_text(f"✅ **Group Broadcast Completed!**\n\n🕒 **Duration:** `{time_taken}`\n💬 **Total:** `{total_chats}`\n✅ **Successful:** `{success}`\n🚷 **Removed From:** `{left}`\n⚠️ **Failed:** `{failed}`\n\n⏳ *These messages will vanish silently in {time_str}.*")
+    time_str = (
+        f"{DELETE_DELAY // 3600} hours"
+        if DELETE_DELAY >= 3600
+        else f"{(DELETE_DELAY % 3600) // 60} minutes"
+    )
+    await status_msg.edit_text(
+        f"✅ **Group Broadcast Completed!**\n\n🕒 **Duration:** `{time_taken}`\n💬 **Total:** `{total_chats}`\n✅ **Successful:** `{success}`\n🚷 **Removed From:** `{left}`\n⚠️ **Failed:** `{failed}`\n\n⏳ *These messages will vanish silently in {time_str}.*"
+    )
