@@ -21,9 +21,9 @@ from pyrogram.types import (
     InputMediaPhoto,
     Message,
 )
-from utils import get_size, temp
 
 from plugins.Imdbposter import get_movie_detailsx
+from utils import get_size, temp
 
 logger = getLogger(__name__)
 logger.setLevel(ERROR)

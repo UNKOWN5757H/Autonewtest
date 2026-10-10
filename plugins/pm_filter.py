@@ -40,6 +40,8 @@ from pyrogram.types import (
     Message,
 )
 
+from plugins.custom_settings import get_bot_settings, get_stopwords
+
 # 👑 IMPORTING THE GOD-TIER UNIVERSAL ADMIN ENGINE
 from utils import (
     admin_filter,
@@ -50,8 +52,6 @@ from utils import (
     parse_text_and_markup,
     temp,
 )
-
-from plugins.custom_settings import get_bot_settings, get_stopwords
 
 logger = getLogger(__name__)
 logger.setLevel(ERROR)

@@ -7,8 +7,11 @@ from logging import INFO, getLogger
 from typing import List, Union
 
 import aiohttp
+import info
 import requests
 from bs4 import BeautifulSoup
+from database.join_reqs import join_reqs as _db2
+from database.users_chats_db import db as _db
 from pyrogram import enums, filters
 from pyrogram.errors import (
     FloodWait,
@@ -18,10 +21,6 @@ from pyrogram.errors import (
     UserNotParticipant,
 )
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
-
-from database.join_reqs import join_reqs as _db2
-from database.users_chats_db import db as _db
-import info
 
 logger = getLogger(__name__)
 logger.setLevel(INFO)
@@ -36,6 +35,7 @@ START_CHAR = ("'", '"', SMART_OPEN)
 # ⚡ EXACT TELEGRAM SUPPORTED COLORS
 try:
     from pyrogram.enums import ButtonStyle
+
     BTN_PRIMARY = getattr(ButtonStyle, "PRIMARY", 1)  # Blue
     BTN_SUCCESS = getattr(ButtonStyle, "SUCCESS", 3)  # Green
     BTN_DANGER = getattr(ButtonStyle, "DANGER", 4)  # Red
@@ -68,19 +68,27 @@ class TMDBWrapper(dict):
 def get_admin_list():
     """Universally fetches and formats the admin list from info.py"""
     raw_admins = getattr(info, "ADMINS", [])
-    if isinstance(raw_admins, str): 
-        return [int(x) for x in raw_admins.replace(",", " ").split() if x.strip().lstrip("-").isdigit()]
-    elif isinstance(raw_admins, int): 
+    if isinstance(raw_admins, str):
+        return [
+            int(x)
+            for x in raw_admins.replace(",", " ").split()
+            if x.strip().lstrip("-").isdigit()
+        ]
+    elif isinstance(raw_admins, int):
         return [raw_admins]
-    elif isinstance(raw_admins, list): 
+    elif isinstance(raw_admins, list):
         return [int(x) for x in raw_admins if str(x).strip().lstrip("-").isdigit()]
     return []
 
+
 def get_uid(message) -> int:
     """Safely extracts User ID, supporting Anonymous Admins"""
-    if getattr(message, "from_user", None): return message.from_user.id
-    if getattr(message, "sender_chat", None): return message.sender_chat.id
+    if getattr(message, "from_user", None):
+        return message.from_user.id
+    if getattr(message, "sender_chat", None):
+        return message.sender_chat.id
     return 0
+
 
 # The master filter that every plugin will import!
 admin_filter = filters.create(lambda _, __, msg: bool(get_uid(msg) in get_admin_list()))
@@ -118,9 +126,28 @@ def parse_ultra_advanced_query(text):
     )
 
     stopwords = [
-        "movie", "full", "watch", "online", "download", "print", "hq", "dubbed",
-        "subtitles", "subs", "part", "audio", "video", "kr_picture", "sandalwood",
-        "exclusive", "official", "team", "kannada_filmy_group", "telegram", "join", "link",
+        "movie",
+        "full",
+        "watch",
+        "online",
+        "download",
+        "print",
+        "hq",
+        "dubbed",
+        "subtitles",
+        "subs",
+        "part",
+        "audio",
+        "video",
+        "kr_picture",
+        "sandalwood",
+        "exclusive",
+        "official",
+        "team",
+        "kannada_filmy_group",
+        "telegram",
+        "join",
+        "link",
     ]
     for word in stopwords + qualities + years + languages:
         text = re.sub(rf"\b{word}\b", "", text)
@@ -135,24 +162,28 @@ def parse_ultra_advanced_query(text):
 
 
 async def is_subscribed(bot, query):
-    user_id = get_uid(query.message) if getattr(query, "message", None) else (query.from_user.id if getattr(query, "from_user", None) else 0)
-    
+    user_id = (
+        get_uid(query.message)
+        if getattr(query, "message", None)
+        else (query.from_user.id if getattr(query, "from_user", None) else 0)
+    )
+
     # Universal Admin Bypass
     if user_id in get_admin_list():
         return True
-        
+
     auth_channel = getattr(info, "AUTH_CHANNEL", None)
     req_channel = getattr(info, "REQ_CHANNEL", None)
-    
+
     if not auth_channel and not req_channel:
         return True
-        
+
     if _db2.isActive() and await _db2.get_user(user_id):
         return True
-        
+
     if not auth_channel:
         return True
-        
+
     try:
         user = await bot.get_chat_member(auth_channel, user_id)
         return user.status not in [
@@ -170,7 +201,7 @@ async def get_poster(query, bulk=False, id=False, file=None):
     tmdb_key = getattr(info, "TMDB_API_KEY", None)
     if not tmdb_key:
         return None
-        
+
     async with aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=10)
     ) as session:
@@ -219,7 +250,10 @@ async def get_poster(query, bulk=False, id=False, file=None):
                     cast = ", ".join([c["name"] for c in cast_data[:10]])
                     genres = ", ".join([g["name"] for g in movie.get("genres", [])])
                     plot = movie.get("overview", "N/A")
-                    if not getattr(info, "LONG_IMDB_DESCRIPTION", False) and len(plot) > 800:
+                    if (
+                        not getattr(info, "LONG_IMDB_DESCRIPTION", False)
+                        and len(plot) > 800
+                    ):
                         plot = plot[:800] + "..."
 
                     return {

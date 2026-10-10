@@ -39,6 +39,9 @@ from pyrogram.types import (
 )
 from Script import script
 
+from plugins.custom_settings import get_bot_settings, get_group_welcome
+from plugins.fsubchannels import ForceSub  # Updated to the new merged FSub file!
+
 # 👑 GOD-TIER UNIVERSAL ADMIN ENGINE
 from utils import (
     admin_filter,
@@ -52,9 +55,6 @@ from utils import (
     parse_text_and_markup,
     temp,
 )
-
-from plugins.custom_settings import get_bot_settings, get_group_welcome
-from plugins.fsubchannels import ForceSub  # Updated to the new merged FSub file!
 
 logger = getLogger(__name__)
 logger.setLevel(ERROR)
