@@ -5,7 +5,6 @@ import time
 from datetime import datetime, timezone
 from logging import ERROR, getLogger
 
-import info
 from database.connections_mdb import (
     add_connection,
     all_connections,
@@ -33,6 +32,7 @@ from pyrogram.types import (
     Message,
 )
 
+import info
 from plugins.custom_settings import get_bot_settings
 
 # 👑 IMPORTING THE GOD-TIER UNIVERSAL ADMIN ENGINE

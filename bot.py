@@ -35,11 +35,11 @@ from aiohttp import web
 from database.ia_filterdb import Media
 from database.plugin_dbs import plugin_db
 from database.users_chats_db import db as old_db
-from info import API_HASH, API_ID, BOT_TOKEN, LOG_STR, PORT, SESSION
 from pyrogram import Client, __version__, filters, idle, types
 from pyrogram.raw.all import layer
 from pyrogram.types import Message
 
+from info import API_HASH, API_ID, BOT_TOKEN, LOG_STR, PORT, SESSION
 from utils import temp
 
 # ============================================================

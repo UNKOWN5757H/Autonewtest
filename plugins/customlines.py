@@ -6,7 +6,6 @@ import re
 import shutil
 from logging import ERROR, getLogger
 
-import info
 from database.connections_mdb import active_connection
 from database.filters_mdb import add_filter, delete_filter, find_filter, get_filters
 from database.ia_filterdb import Media as _Media
@@ -33,6 +32,8 @@ from pyrogram.types import (
     InlineQueryResultCachedDocument,
     Message,
 )
+
+import info
 
 # 👑 IMPORTING THE GOD-TIER UNIVERSAL ADMIN ENGINE
 from utils import admin_filter, get_admin_list, get_size, get_uid, is_subscribed, temp

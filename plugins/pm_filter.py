@@ -11,7 +11,6 @@ from logging import ERROR, getLogger
 from typing import Dict, Optional, Tuple
 
 import aiohttp
-import info
 import requests
 from database.connections_mdb import active_connection
 from database.filters_mdb import find_filter, get_filters
@@ -40,6 +39,7 @@ from pyrogram.types import (
     Message,
 )
 
+import info
 from plugins.custom_settings import get_bot_settings, get_stopwords
 
 # 👑 IMPORTING THE GOD-TIER UNIVERSAL ADMIN ENGINE

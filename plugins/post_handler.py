@@ -9,7 +9,6 @@ import urllib.parse
 from logging import ERROR, getLogger
 from typing import Dict, Optional, Tuple
 
-import info
 import requests
 from motor.motor_asyncio import AsyncIOMotorClient
 from pyrogram import Client, enums, filters
@@ -22,6 +21,7 @@ from pyrogram.types import (
     Message,
 )
 
+import info
 from plugins.Imdbposter import get_movie_detailsx
 from utils import get_size, temp
 

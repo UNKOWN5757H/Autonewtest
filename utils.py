@@ -7,7 +7,6 @@ from logging import INFO, getLogger
 from typing import List, Union
 
 import aiohttp
-import info
 import requests
 from bs4 import BeautifulSoup
 from database.join_reqs import join_reqs as _db2
@@ -21,6 +20,8 @@ from pyrogram.errors import (
     UserNotParticipant,
 )
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+import info
 
 logger = getLogger(__name__)
 logger.setLevel(INFO)
