@@ -37,10 +37,10 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
-from Script import script
 
 from plugins.custom_settings import get_bot_settings, get_group_welcome
 from plugins.fsubchannels import ForceSub  # Updated to the new merged FSub file!
+from Script import script
 
 # 👑 GOD-TIER UNIVERSAL ADMIN ENGINE
 from utils import (
