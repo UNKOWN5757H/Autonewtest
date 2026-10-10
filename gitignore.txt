@@ -1,0 +1,31 @@
+# Security & Personal Files
+*.session
+*.session-journal
+.env
+config.py
+TelegramBot.log
+restart.txt
+DB_Backup_*.json
+batchmode_*.json
+
+# Byte-compiled / Optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Python Packaging & Environments
+build/
+dist/
+downloads/
+.eggs/
+*.egg-info/
+venv/
+env/
+.venv/
+
+# IDEs & OS Junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
