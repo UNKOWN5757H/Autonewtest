@@ -41,7 +41,6 @@ from database.ia_filterdb import get_search_results
 from database.plugin_dbs import plugin_db as _plugin_db
 from database.users_chats_db import db as _db
 from plugins.custom_settings import get_bot_settings, get_stopwords
-
 from utils import (
     admin_filter,
     get_admin_list,
@@ -70,6 +69,7 @@ DEFAULT_CLEAN_WORDS = ["sandalwood", "mkv", "mp4", "avi", "webm", "zip", "rar"]
 
 try:
     from pyrogram.enums import ButtonStyle
+
     BTN_PRIMARY = getattr(ButtonStyle, "PRIMARY", 1)
     BTN_SUCCESS = getattr(ButtonStyle, "SUCCESS", 3)
     BTN_DANGER = getattr(ButtonStyle, "DANGER", 4)
