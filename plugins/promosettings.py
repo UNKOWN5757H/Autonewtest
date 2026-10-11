@@ -33,6 +33,10 @@ logger.setLevel(ERROR)
 # ============================================================
 # ⚙️ MONGODB & GLOBALS SETUP
 # ============================================================
+_DB_CLIENT = None
+_BOT_DB = None
+_broadcast_col = None
+
 try:
     _DB_CLIENT = AsyncIOMotorClient(info.DATABASE_URI)
     _BOT_DB = _DB_CLIENT[info.DATABASE_NAME]
@@ -167,7 +171,7 @@ async def db_backup_cmd(bot: Client, message: Message):
 
 @Client.on_message(filters.command("dbrestore") & admin_filter)
 async def db_restore_cmd(bot: Client, message: Message):
-    if not message.reply_to_message or not message.reply_to_message.document:
+    if not getattr(message, "reply_to_message", None) or not getattr(message.reply_to_message, "document", None):
         return await message.reply_text(
             "⚙️ **Usage:**\nReply to a previously generated backup `.json` file with `/dbrestore`."
         )
@@ -315,16 +319,17 @@ async def bcast_cleaner_worker(bot: Client):
     while True:
         try:
             now = time.time()
-            cursor = _broadcast_col.find({"delete_at": {"$lte": now}})
-            docs = await cursor.to_list(length=100)
-            for doc in docs:
-                try:
-                    await bot.delete_messages(
-                        chat_id=doc["chat_id"], message_ids=doc["message_id"]
-                    )
-                except Exception:
-                    pass
-                await _broadcast_col.delete_one({"_id": doc["_id"]})
+            if _broadcast_col is not None:
+                cursor = _broadcast_col.find({"delete_at": {"$lte": now}})
+                docs = await cursor.to_list(length=100)
+                for doc in docs:
+                    try:
+                        await bot.delete_messages(
+                            chat_id=doc["chat_id"], message_ids=doc["message_id"]
+                        )
+                    except Exception:
+                        pass
+                    await _broadcast_col.delete_one({"_id": doc["_id"]})
         except Exception:
             pass
         await asyncio.sleep(60)
@@ -357,21 +362,21 @@ async def send_and_schedule_delete(bot: Client, chat_id: int, message: Message):
                     chat_id=chat_id, disable_notification=True
                 )
             except Exception:
-                if message.photo:
+                if getattr(message, "photo", None):
                     sent_msg = await bot.send_photo(
                         chat_id,
                         message.photo.file_id,
                         caption=message.caption,
                         disable_notification=True,
                     )
-                elif message.video:
+                elif getattr(message, "video", None):
                     sent_msg = await bot.send_video(
                         chat_id,
                         message.video.file_id,
                         caption=message.caption,
                         disable_notification=True,
                     )
-                elif message.document:
+                elif getattr(message, "document", None):
                     sent_msg = await bot.send_document(
                         chat_id,
                         message.document.file_id,
@@ -383,7 +388,7 @@ async def send_and_schedule_delete(bot: Client, chat_id: int, message: Message):
                         chat_id, message.text, disable_notification=True
                     )
 
-        if sent_msg:
+        if sent_msg and _broadcast_col is not None:
             await _broadcast_col.insert_one(
                 {
                     "chat_id": chat_id,
