@@ -142,6 +142,7 @@ TELEGRAM_LINK_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+
 async def is_group_admin(bot: Client, chat_id: int, user_id: int) -> bool:
     if user_id in get_admin_list():
         return True
