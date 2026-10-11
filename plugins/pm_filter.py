@@ -42,7 +42,6 @@ from database.plugin_dbs import plugin_db as _plugin_db
 from database.users_chats_db import db as _db
 from plugins.custom_settings import get_bot_settings, get_stopwords
 
-# 👑 IMPORTING THE GOD-TIER UNIVERSAL ADMIN ENGINE
 from utils import (
     admin_filter,
     get_admin_list,
@@ -71,7 +70,6 @@ DEFAULT_CLEAN_WORDS = ["sandalwood", "mkv", "mp4", "avi", "webm", "zip", "rar"]
 
 try:
     from pyrogram.enums import ButtonStyle
-
     BTN_PRIMARY = getattr(ButtonStyle, "PRIMARY", 1)
     BTN_SUCCESS = getattr(ButtonStyle, "SUCCESS", 3)
     BTN_DANGER = getattr(ButtonStyle, "DANGER", 4)
@@ -730,10 +728,14 @@ def get_auto_delete_timer() -> int:
         return 0
 
 
-async def silent_auto_delete(msg: Message, delay: int):
+# 🟢 BUG FIXED: SILENT AUTO DELETE NOW CLEARS BOTH BOT AND USER MESSAGES
+async def silent_auto_delete(msg: Message, delay: int, user_msg: Message = None):
     await asyncio.sleep(delay)
     try:
-        await msg.delete()
+        msg_ids = [msg.id]
+        if user_msg:
+            msg_ids.append(user_msg.id)
+        await msg._client.delete_messages(msg.chat.id, msg_ids)
     except Exception:
         pass
 
@@ -767,7 +769,7 @@ async def _send_not_found(msg: Message, img: Optional[str], text: str):
         pass
 
     if k_msg and get_auto_delete_timer() > 0:
-        asyncio.create_task(silent_auto_delete(k_msg, get_auto_delete_timer()))
+        asyncio.create_task(silent_auto_delete(k_msg, get_auto_delete_timer(), msg))
 
 
 async def auto_filter(client: Client, msg: Message):
@@ -937,13 +939,12 @@ async def auto_filter(client: Client, msg: Message):
             return
 
         if get_auto_delete_timer() > 0 and m:
-            asyncio.create_task(silent_auto_delete(m, get_auto_delete_timer()))
+            asyncio.create_task(silent_auto_delete(m, get_auto_delete_timer(), msg))
 
     except Exception as e:
         logger.error(f"Fatal error in auto_filter: {e}")
 
 
-# 🚨 BUG FIX: Set group=1 so commands in group=0 can process before filter catches them
 @Client.on_message(filters.group & filters.text & filters.incoming, group=1)
 async def give_filter(client: Client, message: Message):
     if getattr(info, "REPAIR_MODE", False):
