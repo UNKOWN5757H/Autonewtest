@@ -10,7 +10,7 @@ from logging import ERROR, getLogger
 
 import requests
 from motor.motor_asyncio import AsyncIOMotorClient
-from pyrogram import Client, enums, filters
+from pyrogram import Client, StopPropagation, enums, filters
 from pyrogram.errors import ButtonUrlInvalid, FloodWait, MessageNotModified
 from pyrogram.types import (
     CallbackQuery,
@@ -74,7 +74,8 @@ async def custom_listener(client: Client, message: Message):
         future = _WAITING_REQUESTS.pop(key)
         if not future.done():
             future.set_result(message)
-        message.stop_propagation()
+        # 🚨 BUG FIX: Pyrogram v2 requires raising StopPropagation instead of calling it
+        raise StopPropagation
 
 
 async def native_listen(
@@ -100,59 +101,10 @@ TEMPLATES = {
     "divider_list": "🎬 <b>{title} {year}</b>\n━━━━━━━━━━━━━━━━━━\n<blockquote>{LANGUAGES}\n{RESOLUTIONS}\n{OTT_PLATFORMS}</blockquote>",
 }
 
-LANGUAGES = [
-    "Kannada",
-    "English",
-    "Gujarati",
-    "Hindi",
-    "Bengali",
-    "Malayalam",
-    "Marathi",
-    "Punjabi",
-    "Tamil",
-    "Telugu",
-    "Urdu",
-]
-RESOLUTIONS = [
-    "480p",
-    "720p",
-    "1080p",
-    "1440p",
-    "2160p",
-    "4k",
-    "BluRay",
-    "BDRip",
-    "WEB-DL",
-    "HDRip",
-    "WEBRip",
-    "HDTC",
-    "HEVC",
-]
-GENRES = [
-    "Action",
-    "Adventure",
-    "Animation",
-    "Comedy",
-    "Crime",
-    "Drama",
-    "Fantasy",
-    "Horror",
-    "Mystery",
-    "Romance",
-    "Sci-Fi",
-    "Thriller",
-]
-OTT_PLATFORMS = [
-    "Aha",
-    "JioCinema",
-    "SonyLIV",
-    "Voot",
-    "Zee5",
-    "AmazonPrime",
-    "Netflix",
-    "Hulu",
-    "Disney+",
-]
+LANGUAGES = ["Kannada", "English", "Gujarati", "Hindi", "Bengali", "Malayalam", "Marathi", "Punjabi", "Tamil", "Telugu", "Urdu"]
+RESOLUTIONS = ["480p", "720p", "1080p", "1440p", "2160p", "4k", "BluRay", "BDRip", "WEB-DL", "HDRip", "WEBRip", "HDTC", "HEVC"]
+GENRES = ["Action", "Adventure", "Animation", "Comedy", "Crime", "Drama", "Fantasy", "Horror", "Mystery", "Romance", "Sci-Fi", "Thriller"]
+OTT_PLATFORMS = ["Aha", "JioCinema", "SonyLIV", "Voot", "Zee5", "AmazonPrime", "Netflix", "Hulu", "Disney+"]
 
 try:
     from pyrogram.enums import ButtonStyle
@@ -820,37 +772,29 @@ async def extract_and_edit_live_post(client: Client, message: Message, edit_type
         await message.reply("✅ Live channel post updated successfully!")
     except Exception as e:
         await message.reply(f"❌ Error during live edit: {e}")
-
-
 @Client.on_message(filters.command(["editposttitle"]) & admin_filter, group=-4)
 async def live_edit_title(client: Client, message: Message):
     await extract_and_edit_live_post(client, message, "title")
-
 
 @Client.on_message(filters.command(["editpostyear"]) & admin_filter, group=-4)
 async def live_edit_year(client: Client, message: Message):
     await extract_and_edit_live_post(client, message, "year")
 
-
 @Client.on_message(filters.command(["editpostdirect"]) & admin_filter, group=-4)
 async def live_edit_direct(client: Client, message: Message):
     await extract_and_edit_live_post(client, message, "direct")
-
 
 @Client.on_message(filters.command(["editpostbutton"]) & admin_filter, group=-4)
 async def live_edit_button(client: Client, message: Message):
     await extract_and_edit_live_post(client, message, "button")
 
-
 @Client.on_message(filters.command(["editpostbuttoncolour"]) & admin_filter, group=-4)
 async def live_edit_btn_color(client: Client, message: Message):
     await extract_and_edit_live_post(client, message, "buttoncolour")
 
-
 @Client.on_message(filters.command(["editpostimage"]) & admin_filter, group=-4)
 async def live_edit_image(client: Client, message: Message):
     await extract_and_edit_live_post(client, message, "image")
-
 
 @Client.on_message(filters.command(["editpostnormalimage"]) & admin_filter, group=-4)
 async def live_edit_nimg(client: Client, message: Message):
@@ -975,6 +919,7 @@ async def cmd_edit_post_button(client: Client, message: Message):
         return await message.reply(
             "⚠️ Usage: `/editbutton 1 Download Now | https://url.com`"
         )
+
     try:
         args = message.text.split(None, 1)[1]
         row_num_str, rest = args.split(" ", 1)
@@ -1265,6 +1210,7 @@ async def resume_post_cmd(client: Client, message: Message):
     draft = await drafts_db.find_one({"_id": user_id})
     if not draft:
         return await message.reply("⚠️ No saved draft found.")
+
     if draft.get("last_preview_message_id"):
         try:
             await client.delete_messages(
@@ -1276,7 +1222,7 @@ async def resume_post_cmd(client: Client, message: Message):
     post_sessions[user_id] = draft
     asyncio.create_task(expire_post_session(client, user_id, 1800))
     await update_post_preview(client, user_id, message.chat.id, force_resend=True)
-    await message.reply("✅ Draft restored from Database!")
+    await message.reply("✅ Draft successfully restored from Database!")
 
 
 @Client.on_message(filters.command("editpost") & admin_filter, group=-4)
