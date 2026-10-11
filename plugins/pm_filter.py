@@ -943,7 +943,8 @@ async def auto_filter(client: Client, msg: Message):
         logger.error(f"Fatal error in auto_filter: {e}")
 
 
-@Client.on_message(filters.group & filters.text & filters.incoming)
+# 🚨 BUG FIX: Set group=1 so commands in group=0 can process before filter catches them
+@Client.on_message(filters.group & filters.text & filters.incoming, group=1)
 async def give_filter(client: Client, message: Message):
     if getattr(info, "REPAIR_MODE", False):
         if get_uid(message) not in get_admin_list():
