@@ -71,6 +71,7 @@ except Exception as e:
 # 🟢 RESTORED BUTTON COLORS
 try:
     from pyrogram.enums import ButtonStyle
+
     BTN_PRIMARY = getattr(ButtonStyle, "PRIMARY", 1)
     BTN_SUCCESS = getattr(ButtonStyle, "SUCCESS", 3)
     BTN_DANGER = getattr(ButtonStyle, "DANGER", 4)
@@ -157,15 +158,70 @@ async def save_pm_settings(key, value):
 # 🛑 SMART STOPWORDS ENGINE
 # ============================================================
 DEFAULT_STOPWORDS = [
-    "send", "snd", "give", "gib", "pls", "plz", "please", "need", "want",
-    "upload", "uplod", "drop", "share", "find", "search", "provide", "post",
-    "movie", "movies", "film", "films", "cinema", "cinemas", "full", "fullmovie",
-    "download", "downlod", "link", "links", "file", "files", "print", "audio",
-    "ott", "hd", "hq", "bluray", "rip", "watch", "online", "admin",
-    "beku", "bekithu", "bekittu", "bekagide", "kodi", "kodro", "kalsi", "kalsro",
-    "kalisi", "haki", "haku", "hakro", "ideya", "irboda", "bidi", "madu",
-    "yaradru", "kannadadalli", "sandalwood", "kr_picture", "kannada_filmy_group",
-    "telegram", "dubbed",
+    "send",
+    "snd",
+    "give",
+    "gib",
+    "pls",
+    "plz",
+    "please",
+    "need",
+    "want",
+    "upload",
+    "uplod",
+    "drop",
+    "share",
+    "find",
+    "search",
+    "provide",
+    "post",
+    "movie",
+    "movies",
+    "film",
+    "films",
+    "cinema",
+    "cinemas",
+    "full",
+    "fullmovie",
+    "download",
+    "downlod",
+    "link",
+    "links",
+    "file",
+    "files",
+    "print",
+    "audio",
+    "ott",
+    "hd",
+    "hq",
+    "bluray",
+    "rip",
+    "watch",
+    "online",
+    "admin",
+    "beku",
+    "bekithu",
+    "bekittu",
+    "bekagide",
+    "kodi",
+    "kodro",
+    "kalsi",
+    "kalsro",
+    "kalisi",
+    "haki",
+    "haku",
+    "hakro",
+    "ideya",
+    "irboda",
+    "bidi",
+    "madu",
+    "yaradru",
+    "kannadadalli",
+    "sandalwood",
+    "kr_picture",
+    "kannada_filmy_group",
+    "telegram",
+    "dubbed",
 ]
 ACTIVE_STOPWORDS = DEFAULT_STOPWORDS.copy()
 _stopwords_loaded = False
@@ -2020,7 +2076,9 @@ async def add_start_btn(client, message):
             )
         ui = await get_ui()
         btns = ui.get("start_buttons", [])
-        btns.append({"text": btn_text, "url": url, "layout": "belowside", "color": "blue"})
+        btns.append(
+            {"text": btn_text, "url": url, "layout": "belowside", "color": "blue"}
+        )
         await update_ui("start_buttons", btns)
         await message.reply_text(
             f"✅ **Start Button Added!**\n\nCurrent Buttons:\n{format_btn_list(btns)}"
@@ -2112,7 +2170,9 @@ async def add_help_btn(client, message):
             )
         ui = await get_ui()
         btns = ui.get("help_buttons", [])
-        btns.append({"text": btn_text, "url": url, "layout": "belowside", "color": "blue"})
+        btns.append(
+            {"text": btn_text, "url": url, "layout": "belowside", "color": "blue"}
+        )
         await update_ui("help_buttons", btns)
         await message.reply_text(
             f"✅ **Help Button Added!**\n\nCurrent Buttons:\n{format_btn_list(btns)}"
@@ -2202,7 +2262,9 @@ async def add_about_btn(client, message):
             )
         ui = await get_ui()
         btns = ui.get("about_buttons", [])
-        btns.append({"text": btn_text, "url": url, "layout": "belowside", "color": "blue"})
+        btns.append(
+            {"text": btn_text, "url": url, "layout": "belowside", "color": "blue"}
+        )
         await update_ui("about_buttons", btns)
         await message.reply_text(
             f"✅ **About Button Added!**\n\nCurrent Buttons:\n{format_btn_list(btns)}"
@@ -2330,7 +2392,9 @@ async def rem_clean_words(client: Client, message: Message):
     try:
         if cw_db is not None:
             await cw_db.update_one(
-                {"id": "words"}, {"$set": {"list": [], "use_default": False}}, upsert=True
+                {"id": "words"},
+                {"$set": {"list": [], "use_default": False}},
+                upsert=True,
             )
             await message.reply_text(
                 "🗑️ **All Clean Words Removed.**\nFilenames will now display exactly as they are uploaded."
@@ -2462,13 +2526,22 @@ async def pm_auto_reply(client: Client, message: Message):
 
         reply_markup = None
         if btn_text and btn_url:
-            color_map = {"green": BTN_SUCCESS, "red": BTN_DANGER, "blue": BTN_PRIMARY, "normal": None}
+            color_map = {
+                "green": BTN_SUCCESS,
+                "red": BTN_DANGER,
+                "blue": BTN_PRIMARY,
+                "normal": None,
+            }
             btn_style = color_map.get(btn_color_str)
             if btn_style:
-                reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(btn_text, url=btn_url, style=btn_style)]])
+                reply_markup = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton(btn_text, url=btn_url, style=btn_style)]]
+                )
             else:
-                reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(btn_text, url=btn_url)]])
-                
+                reply_markup = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton(btn_text, url=btn_url)]]
+                )
+
         if pm_img and str(pm_img).lower() != "none":
             await message.reply_photo(
                 photo=pm_img,
