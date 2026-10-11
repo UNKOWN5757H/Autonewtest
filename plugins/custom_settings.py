@@ -147,16 +147,75 @@ async def save_pm_settings(key, value):
 # 🛑 SMART STOPWORDS ENGINE
 # ============================================================
 DEFAULT_STOPWORDS = [
-    "send", "snd", "give", "gib", "pls", "plz", "please", "need", "want",
-    "upload", "uplod", "drop", "share", "find", "search", "provide", "post",
-    "movie", "movies", "film", "films", "cinema", "cinemas", "full", "fullmovie",
-    "download", "downlod", "link", "links", "file", "files", "print", "audio",
-    "video", "ott", "hd", "hq", "bluray", "rip", "watch", "online", "admin",
-    "beku", "bekithu", "bekittu", "bekagide", "kodi", "kodro", "kalsi", "kalsro",
-    "kalisi", "haki", "haku", "hakro", "ideya", "irboda", "bidi", "madu",
-    "yaradru", "chitra", "chithra", "chalanachitra", "chalanachithra",
-    "kannadadalli", "sandalwood", "kr_picture", "kannada_filmy_group",
-    "telegram", "dubbed"
+    "send",
+    "snd",
+    "give",
+    "gib",
+    "pls",
+    "plz",
+    "please",
+    "need",
+    "want",
+    "upload",
+    "uplod",
+    "drop",
+    "share",
+    "find",
+    "search",
+    "provide",
+    "post",
+    "movie",
+    "movies",
+    "film",
+    "films",
+    "cinema",
+    "cinemas",
+    "full",
+    "fullmovie",
+    "download",
+    "downlod",
+    "link",
+    "links",
+    "file",
+    "files",
+    "print",
+    "audio",
+    "video",
+    "ott",
+    "hd",
+    "hq",
+    "bluray",
+    "rip",
+    "watch",
+    "online",
+    "admin",
+    "beku",
+    "bekithu",
+    "bekittu",
+    "bekagide",
+    "kodi",
+    "kodro",
+    "kalsi",
+    "kalsro",
+    "kalisi",
+    "haki",
+    "haku",
+    "hakro",
+    "ideya",
+    "irboda",
+    "bidi",
+    "madu",
+    "yaradru",
+    "chitra",
+    "chithra",
+    "chalanachitra",
+    "chalanachithra",
+    "kannadadalli",
+    "sandalwood",
+    "kr_picture",
+    "kannada_filmy_group",
+    "telegram",
+    "dubbed",
 ]
 ACTIVE_STOPWORDS = DEFAULT_STOPWORDS.copy()
 _stopwords_loaded = False
@@ -1806,6 +1865,7 @@ USER_MESSAGE_LOG, MUTED_USERS, MUTED_PROCESSING_LOCK = defaultdict(list), {}, se
 ADMIN_CACHE = {}
 _GC_STARTED = False
 
+
 async def _delete_after(msg: Message, delay: int):
     await asyncio.sleep(delay)
     try:
@@ -1941,6 +2001,7 @@ async def ironclad_antiflood_shield(client: Client, message: Message):
 # 📝 CUSTOM UI SETTINGS COMMANDS
 # ============================================================
 
+
 def parse_button_cmd(text):
     try:
         if "|" in text:
@@ -1963,6 +2024,7 @@ def format_btn_list(btns):
             for i, b in enumerate(btns, 1)
         ]
     )
+
 
 @Client.on_message(filters.command("setstarttext") & admin_filter)
 async def set_start_text(client, message):
