@@ -1760,6 +1760,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
     except QueryIdInvalid:
         pass
 
+
 @Client.on_message(filters.command("dbtest") & filters.private)
 async def dbtest_cmd(client: Client, message: Message):
     msg = await message.reply_text("⏳ Testing Database Connection...")
@@ -1769,4 +1770,3 @@ async def dbtest_cmd(client: Client, message: Message):
         await msg.edit_text("✅ **Database Connected Successfully!**")
     except Exception as e:
         await msg.edit_text(f"❌ **Database Connection Failed:**\n`{str(e)}`")
-        
