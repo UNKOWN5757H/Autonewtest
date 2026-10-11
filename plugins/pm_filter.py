@@ -95,7 +95,7 @@ def create_btn(text, url=None, callback_data=None, style=None):
 
 
 # ============================================================
-# 🎬 TMDB & POSTER ENGINE (Imdbposter.py Integration)
+# 🎬 TMDB & POSTER ENGINE
 # ============================================================
 Image.MAX_IMAGE_PIXELS = None
 warnings.simplefilter("ignore", Image.DecompressionBombWarning)
