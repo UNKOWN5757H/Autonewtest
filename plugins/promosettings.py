@@ -171,7 +171,9 @@ async def db_backup_cmd(bot: Client, message: Message):
 
 @Client.on_message(filters.command("dbrestore") & admin_filter)
 async def db_restore_cmd(bot: Client, message: Message):
-    if not getattr(message, "reply_to_message", None) or not getattr(message.reply_to_message, "document", None):
+    if not getattr(message, "reply_to_message", None) or not getattr(
+        message.reply_to_message, "document", None
+    ):
         return await message.reply_text(
             "⚙️ **Usage:**\nReply to a previously generated backup `.json` file with `/dbrestore`."
         )
