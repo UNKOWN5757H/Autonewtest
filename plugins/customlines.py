@@ -63,16 +63,8 @@ try:
 except ImportError:
     psutil = None
 
-try:
-    from pyrogram.enums import ButtonStyle
-
-    BTN_PRIMARY, BTN_SUCCESS, BTN_DANGER = (
-        getattr(ButtonStyle, "PRIMARY", 1),
-        getattr(ButtonStyle, "SUCCESS", 3),
-        getattr(ButtonStyle, "DANGER", 4),
-    )
-except ImportError:
-    BTN_PRIMARY, BTN_SUCCESS, BTN_DANGER = 1, 3, 4
+# 🚨 BUG FIX: Hardcoded integers to prevent MongoDB ButtonStyle encoding crash
+BTN_PRIMARY, BTN_SUCCESS, BTN_DANGER, BTN_SECONDARY = 1, 3, 4, 2
 
 # ============================================================
 # ⚙️ MONGODB & GLOBALS SETUP (MERGED)
@@ -115,7 +107,7 @@ async def custom_listener(client: Client, message: Message):
         future = _WAITING_REQUESTS.pop(key)
         if not future.done():
             future.set_result(message)
-        # 🚨 BUG FIX: Pyrogram v2 compatibility
+        # 🚨 BUG FIX: Pyrogram v2 compatibility - raises safely instead of crashing
         raise StopPropagation
 
 
@@ -1680,14 +1672,6 @@ async def get_pending_fsub(bot: Client, message: Message):
 # ============================================================
 # 🎨 FILTER COMMANDS, SEARCH INTERCEPTOR AND AUTO-FILTER HOOK
 # ============================================================
-# Note: Re-implementing customlines.py contents below.
-
-_filter_col = None
-try:
-    _filter_col = _BOT_DB["filters"]
-except Exception as e:
-    logger.error(f"Filters Direct DB fallback init failed: {e}")
-
 
 async def db_add_filter(
     grp_id: int, keyword: str, text: str, btn: str, alert: str, fileid: str
@@ -1769,11 +1753,11 @@ def build_keyboard(btn_str: str):
                         style_val, style_val
                     )
                     btn_row.append(
-                        create_button(
+                        InlineKeyboardButton(
                             text=b_copy.get("text", "Button"),
                             url=b_copy.get("url"),
                             callback_data=b_copy.get("callback_data"),
-                            style=final_style,
+                            **({"style": final_style} if final_style else {})
                         )
                     )
                 else:
