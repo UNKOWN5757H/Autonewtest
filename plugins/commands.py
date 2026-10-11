@@ -1227,7 +1227,11 @@ async def start(client: Client, message: Message):
 
     # 🛡️ SafeDict prevents unhandled variables in script.py from crashing the bot
     format_vars = SafeDict(
-        mention=(getattr(message.from_user, "mention", None) or message.chat.title if message.chat else "User"),
+        mention=(
+            getattr(message.from_user, "mention", None) or message.chat.title
+            if message.chat
+            else "User"
+        ),
         first=getattr(message.from_user, "first_name", "User"),
         first_name=getattr(message.from_user, "first_name", "User"),
         name=getattr(message.from_user, "first_name", "User"),
@@ -1491,7 +1495,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             and query.data != "close_data"
         ):
             return await query.answer("🛠️ Bot is under maintenance!", show_alert=True)
-            
+
     # SafeDict for inline button callbacks
     format_vars = SafeDict(
         mention=query.from_user.mention,
@@ -1504,7 +1508,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
         plane_emoji=MESSAGE_EMOJI_PLANE,
         link_emoji=MESSAGE_EMOJI_LINK,
     )
-    
+
     try:
         if query.data == "close_data":
             await query.message.delete()
@@ -1524,7 +1528,9 @@ async def cb_handler(client: Client, query: CallbackQuery):
         elif query.data == "start":
             await query.answer()
             ui = await get_ui()
-            raw_text = (ui.get("start_text") or script.START_TXT).format_map(format_vars)
+            raw_text = (ui.get("start_text") or script.START_TXT).format_map(
+                format_vars
+            )
             final_text, final_keyboard = parse_text_and_markup(
                 raw_text, await get_start_keyboard(query.from_user.id)
             )
@@ -1544,7 +1550,9 @@ async def cb_handler(client: Client, query: CallbackQuery):
         elif query.data == "about":
             await query.answer()
             ui = await get_ui()
-            raw_text = (ui.get("about_text") or script.ABOUT_TXT).format_map(format_vars)
+            raw_text = (ui.get("about_text") or script.ABOUT_TXT).format_map(
+                format_vars
+            )
             final_text, final_keyboard = parse_text_and_markup(
                 raw_text,
                 InlineKeyboardMarkup(
