@@ -629,18 +629,6 @@ async def get_resume_state(chat_id):
     return doc.get("last_id", 0) if doc else 0
 
 
-async def get_clean_words():
-    if cw_db is None:
-        return DEFAULT_CLEAN_WORDS
-    try:
-        doc = await cw_db.find_one({"id": "words"})
-        if doc is None or doc.get("use_default", True):
-            return DEFAULT_CLEAN_WORDS
-        return doc.get("list", [])
-    except Exception:
-        return DEFAULT_CLEAN_WORDS
-
-
 async def get_idx_settings():
     default_settings = {
         "min_size": 0,
@@ -666,20 +654,6 @@ async def get_idx_settings():
 async def save_idx_settings(key, value):
     if idx_db is not None:
         await idx_db.update_one({"id": "config"}, {"$set": {key: value}}, upsert=True)
-
-
-def clean_filename(name: str, clean_words: list) -> str:
-    if not name:
-        return "File"
-    if any(w.lower() in ["mkv", "sandalwood"] for w in clean_words):
-        name = re.sub(r"(?i)\[?@?sandalwood[^\]\s]*\]?", "", name)
-        name = re.sub(r"(?i)\b(sandalwood|mkv|mp4|avi|webm|zip|rar)\b", "", name)
-    name = re.sub(r"[_.-]", " ", name)
-    for word in clean_words:
-        if word.lower() in ["mkv", "sandalwood", "mp4", "avi", "webm", "zip", "rar"]:
-            continue
-        name = re.sub(rf"(?i){re.escape(word)}", "", name)
-    return re.sub(r"\s+", " ", name).strip()
 
 
 def parse_channels(chan_var):
