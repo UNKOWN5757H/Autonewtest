@@ -68,6 +68,16 @@ try:
 except Exception as e:
     logger.error(f"Failed to init custom settings DB: {e}")
 
+# 🟢 RESTORED BUTTON COLORS
+try:
+    from pyrogram.enums import ButtonStyle
+    BTN_PRIMARY = getattr(ButtonStyle, "PRIMARY", 1)
+    BTN_SUCCESS = getattr(ButtonStyle, "SUCCESS", 3)
+    BTN_DANGER = getattr(ButtonStyle, "DANGER", 4)
+    BTN_SECONDARY = getattr(ButtonStyle, "SECONDARY", 2)
+except ImportError:
+    BTN_PRIMARY, BTN_SUCCESS, BTN_DANGER, BTN_SECONDARY = 1, 3, 4, 2
+
 
 # ============================================================
 # 🛠️ GENERAL DATABASE GETTERS & SETTERS
@@ -147,70 +157,15 @@ async def save_pm_settings(key, value):
 # 🛑 SMART STOPWORDS ENGINE
 # ============================================================
 DEFAULT_STOPWORDS = [
-    "send",
-    "snd",
-    "give",
-    "gib",
-    "pls",
-    "plz",
-    "please",
-    "need",
-    "want",
-    "upload",
-    "uplod",
-    "drop",
-    "share",
-    "find",
-    "search",
-    "provide",
-    "post",
-    "movie",
-    "movies",
-    "film",
-    "films",
-    "cinema",
-    "cinemas",
-    "full",
-    "fullmovie",
-    "download",
-    "downlod",
-    "link",
-    "links",
-    "file",
-    "files",
-    "print",
-    "audio",
-    "ott",
-    "hd",
-    "hq",
-    "bluray",
-    "rip",
-    "watch",
-    "online",
-    "admin",
-    "beku",
-    "bekithu",
-    "bekittu",
-    "bekagide",
-    "kodi",
-    "kodro",
-    "kalsi",
-    "kalsro",
-    "kalisi",
-    "haki",
-    "haku",
-    "hakro",
-    "ideya",
-    "irboda",
-    "bidi",
-    "madu",
-    "yaradru",
-    "kannadadalli",
-    "sandalwood",
-    "kr_picture",
-    "kannada_filmy_group",
-    "telegram",
-    "dubbed",
+    "send", "snd", "give", "gib", "pls", "plz", "please", "need", "want",
+    "upload", "uplod", "drop", "share", "find", "search", "provide", "post",
+    "movie", "movies", "film", "films", "cinema", "cinemas", "full", "fullmovie",
+    "download", "downlod", "link", "links", "file", "files", "print", "audio",
+    "ott", "hd", "hq", "bluray", "rip", "watch", "online", "admin",
+    "beku", "bekithu", "bekittu", "bekagide", "kodi", "kodro", "kalsi", "kalsro",
+    "kalisi", "haki", "haku", "hakro", "ideya", "irboda", "bidi", "madu",
+    "yaradru", "kannadadalli", "sandalwood", "kr_picture", "kannada_filmy_group",
+    "telegram", "dubbed",
 ]
 ACTIVE_STOPWORDS = DEFAULT_STOPWORDS.copy()
 _stopwords_loaded = False
@@ -2023,16 +1978,22 @@ def format_btn_list(btns):
 
 @Client.on_message(filters.command("setstarttext") & admin_filter)
 async def set_start_text(client, message):
-    if len(message.command) < 2:
-        return await message.reply_text("⚠️ **Usage:** `/setstarttext <text>`")
-    await update_ui("start_text", message.text.split(None, 1)[1])
-    await message.reply_text("✅ **Start Menu Text updated!**")
+    try:
+        if len(message.command) < 2:
+            return await message.reply_text("⚠️ **Usage:** `/setstarttext <text>`")
+        await update_ui("start_text", message.text.split(None, 1)[1])
+        await message.reply_text("✅ **Start Menu Text updated!**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("defaultstarttext") & admin_filter)
 async def def_start_text(client, message):
-    await update_ui("start_text", None)
-    await message.reply_text("✅ **Start Menu Text reset to default.**")
+    try:
+        await update_ui("start_text", None)
+        await message.reply_text("✅ **Start Menu Text reset to default.**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("setstartimage") & admin_filter)
@@ -2042,24 +2003,30 @@ async def set_start_img(client, message):
 
 @Client.on_message(filters.command("remstartimage") & admin_filter)
 async def rem_start_img(client, message):
-    await update_ui("start_img", None)
-    await message.reply_text("🗑️ **Start Menu Image removed.**")
+    try:
+        await update_ui("start_img", None)
+        await message.reply_text("🗑️ **Start Menu Image removed.**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("addstartbutton") & admin_filter)
 async def add_start_btn(client, message):
-    btn_text, url = parse_button_cmd(message.text)
-    if not btn_text:
-        return await message.reply_text(
-            "⚠️ **Usage:** `/addstartbutton Text | https://link.com`"
+    try:
+        btn_text, url = parse_button_cmd(message.text)
+        if not btn_text:
+            return await message.reply_text(
+                "⚠️ **Usage:** `/addstartbutton Text | https://link.com`"
+            )
+        ui = await get_ui()
+        btns = ui.get("start_buttons", [])
+        btns.append({"text": btn_text, "url": url, "layout": "belowside", "color": "blue"})
+        await update_ui("start_buttons", btns)
+        await message.reply_text(
+            f"✅ **Start Button Added!**\n\nCurrent Buttons:\n{format_btn_list(btns)}"
         )
-    ui = await get_ui()
-    btns = ui.get("start_buttons", [])
-    btns.append({"text": btn_text, "url": url, "layout": "belowside", "color": "blue"})
-    await update_ui("start_buttons", btns)
-    await message.reply_text(
-        f"✅ **Start Button Added!**\n\nCurrent Buttons:\n{format_btn_list(btns)}"
-    )
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("editstartbuttons") & admin_filter)
@@ -2088,26 +2055,37 @@ async def edit_start_btn(client, message):
         await message.reply_text(
             "⚠️ **Usage:** `/editstartbuttons <number> <sidebyside/belowside> <color>`"
         )
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("remstartbutton") & admin_filter)
 async def rem_start_btn(client, message):
-    await update_ui("start_buttons", [])
-    await message.reply_text("🗑️ **All custom Start Menu buttons cleared.**")
+    try:
+        await update_ui("start_buttons", [])
+        await message.reply_text("🗑️ **All custom Start Menu buttons cleared.**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("sethelptext") & admin_filter)
 async def set_help_text(client, message):
-    if len(message.command) < 2:
-        return await message.reply_text("⚠️ **Usage:** `/sethelptext <text>`")
-    await update_ui("help_text", message.text.split(None, 1)[1])
-    await message.reply_text("✅ **Help Menu Text updated!**")
+    try:
+        if len(message.command) < 2:
+            return await message.reply_text("⚠️ **Usage:** `/sethelptext <text>`")
+        await update_ui("help_text", message.text.split(None, 1)[1])
+        await message.reply_text("✅ **Help Menu Text updated!**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("defaulthelptext") & admin_filter)
 async def def_help_text(client, message):
-    await update_ui("help_text", None)
-    await message.reply_text("✅ **Help Menu Text reset to default.**")
+    try:
+        await update_ui("help_text", None)
+        await message.reply_text("✅ **Help Menu Text reset to default.**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("sethelpimage") & admin_filter)
@@ -2117,24 +2095,30 @@ async def set_help_img(client, message):
 
 @Client.on_message(filters.command("remhelpimage") & admin_filter)
 async def rem_help_img(client, message):
-    await update_ui("help_img", None)
-    await message.reply_text("🗑️ **Help Menu Image removed.**")
+    try:
+        await update_ui("help_img", None)
+        await message.reply_text("🗑️ **Help Menu Image removed.**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("addhelpbutton") & admin_filter)
 async def add_help_btn(client, message):
-    btn_text, url = parse_button_cmd(message.text)
-    if not btn_text:
-        return await message.reply_text(
-            "⚠️ **Usage:** `/addhelpbutton Text | https://link.com`"
+    try:
+        btn_text, url = parse_button_cmd(message.text)
+        if not btn_text:
+            return await message.reply_text(
+                "⚠️ **Usage:** `/addhelpbutton Text | https://link.com`"
+            )
+        ui = await get_ui()
+        btns = ui.get("help_buttons", [])
+        btns.append({"text": btn_text, "url": url, "layout": "belowside", "color": "blue"})
+        await update_ui("help_buttons", btns)
+        await message.reply_text(
+            f"✅ **Help Button Added!**\n\nCurrent Buttons:\n{format_btn_list(btns)}"
         )
-    ui = await get_ui()
-    btns = ui.get("help_buttons", [])
-    btns.append({"text": btn_text, "url": url, "layout": "belowside", "color": "blue"})
-    await update_ui("help_buttons", btns)
-    await message.reply_text(
-        f"✅ **Help Button Added!**\n\nCurrent Buttons:\n{format_btn_list(btns)}"
-    )
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("edithelpbuttons") & admin_filter)
@@ -2161,26 +2145,37 @@ async def edit_help_btn(client, message):
         await message.reply_text(
             "⚠️ **Usage:** `/edithelpbuttons <number> <sidebyside/belowside> <color>`"
         )
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("remhelpbutton") & admin_filter)
 async def rem_help_btn(client, message):
-    await update_ui("help_buttons", [])
-    await message.reply_text("🗑️ **All custom Help Menu buttons cleared.**")
+    try:
+        await update_ui("help_buttons", [])
+        await message.reply_text("🗑️ **All custom Help Menu buttons cleared.**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("setabouttext") & admin_filter)
 async def set_about_text(client, message):
-    if len(message.command) < 2:
-        return await message.reply_text("⚠️ **Usage:** `/setabouttext <text>`")
-    await update_ui("about_text", message.text.split(None, 1)[1])
-    await message.reply_text("✅ **About Menu Text updated!**")
+    try:
+        if len(message.command) < 2:
+            return await message.reply_text("⚠️ **Usage:** `/setabouttext <text>`")
+        await update_ui("about_text", message.text.split(None, 1)[1])
+        await message.reply_text("✅ **About Menu Text updated!**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("defaultabouttext") & admin_filter)
 async def def_about_text(client, message):
-    await update_ui("about_text", None)
-    await message.reply_text("✅ **About Menu Text reset to default.**")
+    try:
+        await update_ui("about_text", None)
+        await message.reply_text("✅ **About Menu Text reset to default.**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("setaboutimage") & admin_filter)
@@ -2190,24 +2185,30 @@ async def set_about_img(client, message):
 
 @Client.on_message(filters.command("remaboutimage") & admin_filter)
 async def rem_about_img(client, message):
-    await update_ui("about_img", None)
-    await message.reply_text("🗑️ **About Menu Image removed.**")
+    try:
+        await update_ui("about_img", None)
+        await message.reply_text("🗑️ **About Menu Image removed.**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("addaboutbutton") & admin_filter)
 async def add_about_btn(client, message):
-    btn_text, url = parse_button_cmd(message.text)
-    if not btn_text:
-        return await message.reply_text(
-            "⚠️ **Usage:** `/addaboutbutton Text | https://link.com`"
+    try:
+        btn_text, url = parse_button_cmd(message.text)
+        if not btn_text:
+            return await message.reply_text(
+                "⚠️ **Usage:** `/addaboutbutton Text | https://link.com`"
+            )
+        ui = await get_ui()
+        btns = ui.get("about_buttons", [])
+        btns.append({"text": btn_text, "url": url, "layout": "belowside", "color": "blue"})
+        await update_ui("about_buttons", btns)
+        await message.reply_text(
+            f"✅ **About Button Added!**\n\nCurrent Buttons:\n{format_btn_list(btns)}"
         )
-    ui = await get_ui()
-    btns = ui.get("about_buttons", [])
-    btns.append({"text": btn_text, "url": url, "layout": "belowside", "color": "blue"})
-    await update_ui("about_buttons", btns)
-    await message.reply_text(
-        f"✅ **About Button Added!**\n\nCurrent Buttons:\n{format_btn_list(btns)}"
-    )
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("editaboutbuttons") & admin_filter)
@@ -2234,12 +2235,17 @@ async def edit_about_btn(client, message):
         await message.reply_text(
             "⚠️ **Usage:** `/editaboutbuttons <number> <sidebyside/belowside> <color>`"
         )
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("remaboutbutton") & admin_filter)
 async def rem_about_btn(client, message):
-    await update_ui("about_buttons", [])
-    await message.reply_text("🗑️ **All custom About Menu buttons cleared.**")
+    try:
+        await update_ui("about_buttons", [])
+        await message.reply_text("🗑️ **All custom About Menu buttons cleared.**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command(["preview_ui", "preview"]) & admin_filter)
@@ -2284,44 +2290,53 @@ async def preview_ui_cmd(client: Client, message: Message):
 
 @Client.on_message(filters.command("setcleanfilename") & admin_filter)
 async def set_clean_words(client: Client, message: Message):
-    if len(message.command) < 2:
-        return await message.reply_text(
-            "⚠️ **Usage:** `/setcleanfilename word1, word2, @ChannelName`"
-        )
-    words_list = [
-        w.strip() for w in message.text.split(None, 1)[1].split(",") if w.strip()
-    ]
-    if cw_db is not None:
-        await cw_db.update_one(
-            {"id": "words"},
-            {"$set": {"list": words_list, "use_default": False}},
-            upsert=True,
-        )
-        await message.reply_text(
-            f"✅ **Clean Words Set Successfully!**\n\nThe following words will be removed from buttons:\n`{', '.join(words_list)}`"
-        )
+    try:
+        if len(message.command) < 2:
+            return await message.reply_text(
+                "⚠️ **Usage:** `/setcleanfilename word1, word2, @ChannelName`"
+            )
+        words_list = [
+            w.strip() for w in message.text.split(None, 1)[1].split(",") if w.strip()
+        ]
+        if cw_db is not None:
+            await cw_db.update_one(
+                {"id": "words"},
+                {"$set": {"list": words_list, "use_default": False}},
+                upsert=True,
+            )
+            await message.reply_text(
+                f"✅ **Clean Words Set Successfully!**\n\nThe following words will be removed from buttons:\n`{', '.join(words_list)}`"
+            )
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("defaultcleanfilename") & admin_filter)
 async def default_clean_words(client: Client, message: Message):
-    if cw_db is not None:
-        await cw_db.update_one(
-            {"id": "words"}, {"$set": {"use_default": True}}, upsert=True
-        )
-        await message.reply_text(
-            "✅ **Reverted to Default Clean Words!**\n(Standard extensions and default tags will be removed)."
-        )
+    try:
+        if cw_db is not None:
+            await cw_db.update_one(
+                {"id": "words"}, {"$set": {"use_default": True}}, upsert=True
+            )
+            await message.reply_text(
+                "✅ **Reverted to Default Clean Words!**\n(Standard extensions and default tags will be removed)."
+            )
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("remcleanfilename") & admin_filter)
 async def rem_clean_words(client: Client, message: Message):
-    if cw_db is not None:
-        await cw_db.update_one(
-            {"id": "words"}, {"$set": {"list": [], "use_default": False}}, upsert=True
-        )
-        await message.reply_text(
-            "🗑️ **All Clean Words Removed.**\nFilenames will now display exactly as they are uploaded."
-        )
+    try:
+        if cw_db is not None:
+            await cw_db.update_one(
+                {"id": "words"}, {"$set": {"list": [], "use_default": False}}, upsert=True
+            )
+            await message.reply_text(
+                "🗑️ **All Clean Words Removed.**\nFilenames will now display exactly as they are uploaded."
+            )
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("setpmtext") & admin_filter)
@@ -2335,42 +2350,51 @@ async def set_pm_text(client: Client, message: Message):
         await save_pm_settings("text", text)
         await message.reply_text(f"✅ PM Text updated successfully to:\n\n{text}")
     except Exception as e:
-        await message.reply_text(f"Error: {e}")
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("rempmtext") & admin_filter)
 async def rem_pm_text(client: Client, message: Message):
-    await save_pm_settings(
-        "text",
-        "<b>🚫 Don't Message Here, Message Here Only!</b>\n\nI do not respond to direct messages in PM.",
-    )
-    await message.reply_text("✅ PM Text reset to default.")
+    try:
+        await save_pm_settings(
+            "text",
+            "<b>🚫 Don't Message Here, Message Here Only!</b>\n\nI do not respond to direct messages in PM.",
+        )
+        await message.reply_text("✅ PM Text reset to default.")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("setpmimage") & admin_filter)
 async def set_pm_image(client: Client, message: Message):
-    if not getattr(message.reply_to_message, "photo", None):
-        return await message.reply_text(
-            "⚙️ **Usage:** Reply to a photo with `/setpmimage`"
-        )
-    status = await message.reply_text("⏳ **Uploading to Cloud...**")
-    url = await upload_image_safely(client, message.reply_to_message)
-    if url:
-        await save_pm_settings("image", url)
-        await status.edit_text(
-            "✅ **PM Image updated successfully!**\n*(Saved permanently to cloud)*"
-        )
-    else:
-        await save_pm_settings("image", message.reply_to_message.photo.file_id)
-        await status.edit_text(
-            "⚠️ Cloud blocked. **PM Image updated successfully!**\n*(Saved as Telegram File_ID)*"
-        )
+    try:
+        if not getattr(message.reply_to_message, "photo", None):
+            return await message.reply_text(
+                "⚙️ **Usage:** Reply to a photo with `/setpmimage`"
+            )
+        status = await message.reply_text("⏳ **Uploading to Cloud...**")
+        url = await upload_image_safely(client, message.reply_to_message)
+        if url:
+            await save_pm_settings("image", url)
+            await status.edit_text(
+                "✅ **PM Image updated successfully!**\n*(Saved permanently to cloud)*"
+            )
+        else:
+            await save_pm_settings("image", message.reply_to_message.photo.file_id)
+            await status.edit_text(
+                "⚠️ Cloud blocked. **PM Image updated successfully!**\n*(Saved as Telegram File_ID)*"
+            )
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("rempmimage") & admin_filter)
 async def rem_pm_image(client: Client, message: Message):
-    await save_pm_settings("image", None)
-    await message.reply_text("✅ PM Image removed.")
+    try:
+        await save_pm_settings("image", None)
+        await message.reply_text("✅ PM Image removed.")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("setpmbutton") & admin_filter)
@@ -2397,14 +2421,17 @@ async def set_pm_button(client: Client, message: Message):
             f"✅ PM Button updated!\nText: {btn_text}\nURL: {btn_url}\nColor: {btn_color}"
         )
     except Exception as e:
-        await message.reply_text(f"Error: {e}")
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.command("rempmbutton") & admin_filter)
 async def rem_pm_button(client: Client, message: Message):
-    await save_pm_settings("button_text", None)
-    await save_pm_settings("button_url", None)
-    await message.reply_text("✅ PM Button removed completely.")
+    try:
+        await save_pm_settings("button_text", None)
+        await save_pm_settings("button_url", None)
+        await message.reply_text("✅ PM Button removed completely.")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:**\n`{str(e)}`")
 
 
 @Client.on_message(filters.private & filters.text & filters.incoming, group=-100)
@@ -2420,37 +2447,28 @@ async def pm_auto_reply(client: Client, message: Message):
     if uid and await _plugin_db.is_banned(uid):
         return
 
-    settings = await get_pm_settings()
-    text = settings.get(
-        "text",
-        "<b>🚫 Don't Message Here, Message Here Only!</b>\n\nI do not respond to direct messages in PM.",
-    )
-    pm_img = settings.get("image", getattr(info, "NOT_FOUND_IMG", None))
-    btn_text, btn_url, btn_color_str = (
-        settings.get("button_text", "💬 Message Here Only"),
-        settings.get("button_url", "https://t.me/Sandalwood_Kannada_Group"),
-        settings.get("button_color", "green"),
-    )
-
-    reply_markup = None
-    if btn_text and btn_url:
-        color_map = {"green": 3, "red": 4, "blue": 1, "normal": None}
-        reply_markup = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        btn_text,
-                        url=btn_url,
-                        **(
-                            {"style": color_map.get(btn_color_str)}
-                            if color_map.get(btn_color_str)
-                            else {}
-                        ),
-                    )
-                ]
-            ]
-        )
     try:
+        settings = await get_pm_settings()
+        text = settings.get(
+            "text",
+            "<b>🚫 Don't Message Here, Message Here Only!</b>\n\nI do not respond to direct messages in PM.",
+        )
+        pm_img = settings.get("image", getattr(info, "NOT_FOUND_IMG", None))
+        btn_text, btn_url, btn_color_str = (
+            settings.get("button_text", "💬 Message Here Only"),
+            settings.get("button_url", "https://t.me/Sandalwood_Kannada_Group"),
+            settings.get("button_color", "green"),
+        )
+
+        reply_markup = None
+        if btn_text and btn_url:
+            color_map = {"green": BTN_SUCCESS, "red": BTN_DANGER, "blue": BTN_PRIMARY, "normal": None}
+            btn_style = color_map.get(btn_color_str)
+            if btn_style:
+                reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(btn_text, url=btn_url, style=btn_style)]])
+            else:
+                reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(btn_text, url=btn_url)]])
+                
         if pm_img and str(pm_img).lower() != "none":
             await message.reply_photo(
                 photo=pm_img,
