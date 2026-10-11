@@ -1759,3 +1759,14 @@ async def cb_handler(client: Client, query: CallbackQuery):
                     pass
     except QueryIdInvalid:
         pass
+
+@Client.on_message(filters.command("dbtest") & filters.private)
+async def dbtest_cmd(client: Client, message: Message):
+    msg = await message.reply_text("⏳ Testing Database Connection...")
+    try:
+        # Force a database ping
+        await _BOT_DB.command("ping")
+        await msg.edit_text("✅ **Database Connected Successfully!**")
+    except Exception as e:
+        await msg.edit_text(f"❌ **Database Connection Failed:**\n`{str(e)}`")
+        
