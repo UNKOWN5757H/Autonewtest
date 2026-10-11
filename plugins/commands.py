@@ -80,6 +80,11 @@ except Exception as e:
 # ============================================================
 # 🛠️ HELPER FUNCTIONS
 # ============================================================
+class SafeDict(dict):
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
 def create_btn(text, url=None, callback_data=None, style=None):
     kwargs = {"text": text}
     if url:
@@ -864,11 +869,6 @@ async def who_is(client: Client, message: Message):
         await status.edit_text("❌ An error occurred while fetching user data.")
 
 
-class SafeDict(dict):
-    def __missing__(self, key):
-        return "{" + key + "}"
-
-
 @Client.on_message(filters.command(["imdb", "search"]))
 async def imdb_search(client: Client, message: Message):
     if len(message.command) < 2:
@@ -1225,12 +1225,21 @@ async def start(client: Client, message: Message):
         len(message.command) == 2 and message.command[1] == "help"
     )
 
+    # 🛡️ SafeDict prevents unhandled variables in script.py from crashing the bot
+    format_vars = SafeDict(
+        mention=(getattr(message.from_user, "mention", None) or message.chat.title if message.chat else "User"),
+        first=getattr(message.from_user, "first_name", "User"),
+        first_name=getattr(message.from_user, "first_name", "User"),
+        name=getattr(message.from_user, "first_name", "User"),
+        id=uid,
+        uname=bot_uname,
+        bname=b_name,
+        plane_emoji=MESSAGE_EMOJI_PLANE,
+        link_emoji=MESSAGE_EMOJI_LINK,
+    )
+
     if is_help_command:
-        text = (ui.get("help_text") or script.HELP_TXT).format(
-            mention=getattr(message.from_user, "mention", "User"),
-            uname=bot_uname,
-            bname=b_name,
-        )
+        text = (ui.get("help_text") or script.HELP_TXT).format_map(format_vars)
         final_text, final_keyboard = parse_text_and_markup(
             text, await get_help_keyboard()
         )
@@ -1250,13 +1259,7 @@ async def start(client: Client, message: Message):
             )
 
     if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        raw_text = (ui.get("start_text") or script.START_TXT).format(
-            mention=(getattr(message.from_user, "mention", None) or message.chat.title),
-            uname=bot_uname,
-            bname=b_name,
-            plane_emoji=MESSAGE_EMOJI_PLANE,
-            link_emoji=MESSAGE_EMOJI_LINK,
-        )
+        raw_text = (ui.get("start_text") or script.START_TXT).format_map(format_vars)
         final_text, final_keyboard = parse_text_and_markup(
             raw_text,
             await get_start_keyboard(uid if getattr(message, "from_user", None) else 0),
@@ -1295,13 +1298,7 @@ async def start(client: Client, message: Message):
             pass
 
     if len(message.command) != 2 or message.command[1] in ["error", "okay", "hehe"]:
-        raw_text = (ui.get("start_text") or script.START_TXT).format(
-            mention=getattr(message.from_user, "mention", "Unknown"),
-            uname=bot_uname,
-            bname=b_name,
-            plane_emoji=MESSAGE_EMOJI_PLANE,
-            link_emoji=MESSAGE_EMOJI_LINK,
-        )
+        raw_text = (ui.get("start_text") or script.START_TXT).format_map(format_vars)
         final_text, final_keyboard = parse_text_and_markup(
             raw_text, await get_start_keyboard(uid)
         )
@@ -1309,12 +1306,19 @@ async def start(client: Client, message: Message):
         photo_to_send = db_img if db_img else (random.choice(PICS) if PICS else None)
         try:
             if photo_to_send:
-                await message.reply_photo(
-                    photo=photo_to_send,
-                    caption=final_text,
-                    reply_markup=final_keyboard,
-                    parse_mode=enums.ParseMode.HTML,
-                )
+                try:
+                    await message.reply_photo(
+                        photo=photo_to_send,
+                        caption=final_text,
+                        reply_markup=final_keyboard,
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+                except Exception:
+                    await message.reply_text(
+                        text=final_text,
+                        reply_markup=final_keyboard,
+                        parse_mode=enums.ParseMode.HTML,
+                    )
             else:
                 await message.reply_text(
                     text=final_text,
@@ -1487,6 +1491,20 @@ async def cb_handler(client: Client, query: CallbackQuery):
             and query.data != "close_data"
         ):
             return await query.answer("🛠️ Bot is under maintenance!", show_alert=True)
+            
+    # SafeDict for inline button callbacks
+    format_vars = SafeDict(
+        mention=query.from_user.mention,
+        first=query.from_user.first_name,
+        first_name=query.from_user.first_name,
+        name=query.from_user.first_name,
+        id=query.from_user.id,
+        uname=temp.U_NAME or "my_bot",
+        bname=temp.B_NAME or "MovieBot",
+        plane_emoji=MESSAGE_EMOJI_PLANE,
+        link_emoji=MESSAGE_EMOJI_LINK,
+    )
+    
     try:
         if query.data == "close_data":
             await query.message.delete()
@@ -1506,13 +1524,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
         elif query.data == "start":
             await query.answer()
             ui = await get_ui()
-            raw_text = (ui.get("start_text") or script.START_TXT).format(
-                mention=query.from_user.mention,
-                uname=temp.U_NAME or "my_bot",
-                bname=temp.B_NAME or "MovieBot",
-                plane_emoji=MESSAGE_EMOJI_PLANE,
-                link_emoji=MESSAGE_EMOJI_LINK,
-            )
+            raw_text = (ui.get("start_text") or script.START_TXT).format_map(format_vars)
             final_text, final_keyboard = parse_text_and_markup(
                 raw_text, await get_start_keyboard(query.from_user.id)
             )
@@ -1522,11 +1534,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
         elif query.data == "help":
             await query.answer()
             ui = await get_ui()
-            raw_text = (ui.get("help_text") or script.HELP_TXT).format(
-                mention=query.from_user.mention,
-                uname=temp.U_NAME or "my_bot",
-                bname=temp.B_NAME or "MovieBot",
-            )
+            raw_text = (ui.get("help_text") or script.HELP_TXT).format_map(format_vars)
             final_text, final_keyboard = parse_text_and_markup(
                 raw_text, await get_help_keyboard()
             )
@@ -1536,9 +1544,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
         elif query.data == "about":
             await query.answer()
             ui = await get_ui()
-            raw_text = (ui.get("about_text") or script.ABOUT_TXT).format(
-                mention=query.from_user.mention, bname=temp.B_NAME or "MovieBot"
-            )
+            raw_text = (ui.get("about_text") or script.ABOUT_TXT).format_map(format_vars)
             final_text, final_keyboard = parse_text_and_markup(
                 raw_text,
                 InlineKeyboardMarkup(
