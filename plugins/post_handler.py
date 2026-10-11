@@ -22,8 +22,6 @@ from pyrogram.types import (
 
 import info
 from plugins.pm_filter import get_movie_detailsx
-
-# Import only what we need from utils
 from utils import get_size, temp
 
 logger = getLogger(__name__)
@@ -40,7 +38,6 @@ try:
     )
 except Exception as e:
     logger.error(f"Failed to init DBs: {e}")
-
 
 # ============================================================
 # 👑 NATIVE ADMIN VERIFICATION (Restored for Post Handler)
@@ -59,7 +56,6 @@ def get_admin_list():
         return [int(x) for x in raw_admins if str(x).strip().lstrip("-").isdigit()]
     return []
 
-
 def get_uid(message: Message) -> int:
     if getattr(message, "from_user", None):
         return message.from_user.id
@@ -67,14 +63,12 @@ def get_uid(message: Message) -> int:
         return message.sender_chat.id
     return 0
 
-
 admin_filter = filters.create(lambda _, __, msg: bool(get_uid(msg) in get_admin_list()))
 
 # ============================================================
 # ⚙️ INTERACTIVE POST LISTENER
 # ============================================================
 _WAITING_REQUESTS = {}
-
 
 @Client.on_message(admin_filter, group=-90)
 async def custom_listener(client: Client, message: Message):
@@ -111,61 +105,31 @@ TEMPLATES = {
 }
 
 LANGUAGES = [
-    "Kannada",
-    "English",
-    "Gujarati",
-    "Hindi",
-    "Bengali",
-    "Malayalam",
-    "Marathi",
-    "Punjabi",
-    "Tamil",
-    "Telugu",
-    "Urdu",
+    "Kannada", "English", "Gujarati", "Hindi", "Bengali", "Malayalam",
+    "Marathi", "Punjabi", "Tamil", "Telugu", "Urdu",
 ]
 RESOLUTIONS = [
-    "480p",
-    "720p",
-    "1080p",
-    "1440p",
-    "2160p",
-    "4k",
-    "BluRay",
-    "BDRip",
-    "WEB-DL",
-    "HDRip",
-    "WEBRip",
-    "HDTC",
-    "HEVC",
+    "480p", "720p", "1080p", "1440p", "2160p", "4k", "BluRay",
+    "BDRip", "WEB-DL", "HDRip", "WEBRip", "HDTC", "HEVC",
 ]
 GENRES = [
-    "Action",
-    "Adventure",
-    "Animation",
-    "Comedy",
-    "Crime",
-    "Drama",
-    "Fantasy",
-    "Horror",
-    "Mystery",
-    "Romance",
-    "Sci-Fi",
-    "Thriller",
+    "Action", "Adventure", "Animation", "Comedy", "Crime", "Drama",
+    "Fantasy", "Horror", "Mystery", "Romance", "Sci-Fi", "Thriller",
 ]
 OTT_PLATFORMS = [
-    "Aha",
-    "JioCinema",
-    "SonyLIV",
-    "Voot",
-    "Zee5",
-    "AmazonPrime",
-    "Netflix",
-    "Hulu",
-    "Disney+",
+    "Aha", "JioCinema", "SonyLIV", "Voot", "Zee5", "AmazonPrime",
+    "Netflix", "Hulu", "Disney+",
 ]
 
-# 🚨 Hardcoded to prevent MongoDB Pyrogram Enum crashes
-BTN_PRIMARY, BTN_SUCCESS, BTN_DANGER, BTN_SECONDARY = 1, 3, 4, 2
+# 🟢 RESTORED BUTTON COLORS
+try:
+    from pyrogram.enums import ButtonStyle
+    BTN_PRIMARY = getattr(ButtonStyle, "PRIMARY", 1)
+    BTN_SUCCESS = getattr(ButtonStyle, "SUCCESS", 3)
+    BTN_DANGER = getattr(ButtonStyle, "DANGER", 4)
+    BTN_SECONDARY = getattr(ButtonStyle, "SECONDARY", 2)
+except ImportError:
+    BTN_PRIMARY, BTN_SUCCESS, BTN_DANGER, BTN_SECONDARY = 1, 3, 4, 2
 
 
 def create_btn(text, url=None, callback_data=None, style=None):
