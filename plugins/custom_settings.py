@@ -147,75 +147,16 @@ async def save_pm_settings(key, value):
 # 🛑 SMART STOPWORDS ENGINE
 # ============================================================
 DEFAULT_STOPWORDS = [
-    "send",
-    "snd",
-    "give",
-    "gib",
-    "pls",
-    "plz",
-    "please",
-    "need",
-    "want",
-    "upload",
-    "uplod",
-    "drop",
-    "share",
-    "find",
-    "search",
-    "provide",
-    "post",
-    "movie",
-    "movies",
-    "film",
-    "films",
-    "cinema",
-    "cinemas",
-    "full",
-    "fullmovie",
-    "download",
-    "downlod",
-    "link",
-    "links",
-    "file",
-    "files",
-    "print",
-    "audio",
-    "video",
-    "ott",
-    "hd",
-    "hq",
-    "bluray",
-    "rip",
-    "watch",
-    "online",
-    "admin",
-    "beku",
-    "bekithu",
-    "bekittu",
-    "bekagide",
-    "kodi",
-    "kodro",
-    "kalsi",
-    "kalsro",
-    "kalisi",
-    "haki",
-    "haku",
-    "hakro",
-    "ideya",
-    "irboda",
-    "bidi",
-    "madu",
-    "yaradru",
-    "chitra",
-    "chithra",
-    "chalanachitra",
-    "chalanachithra",
-    "kannadadalli",
-    "sandalwood",
-    "kr_picture",
-    "kannada_filmy_group",
-    "telegram",
-    "dubbed",
+    "send", "snd", "give", "gib", "pls", "plz", "please", "need", "want",
+    "upload", "uplod", "drop", "share", "find", "search", "provide", "post",
+    "movie", "movies", "film", "films", "cinema", "cinemas", "full", "fullmovie",
+    "download", "downlod", "link", "links", "file", "files", "print", "audio",
+    "video", "ott", "hd", "hq", "bluray", "rip", "watch", "online", "admin",
+    "beku", "bekithu", "bekittu", "bekagide", "kodi", "kodro", "kalsi", "kalsro",
+    "kalisi", "haki", "haku", "hakro", "ideya", "irboda", "bidi", "madu",
+    "yaradru", "chitra", "chithra", "chalanachitra", "chalanachithra",
+    "kannadadalli", "sandalwood", "kr_picture", "kannada_filmy_group",
+    "telegram", "dubbed"
 ]
 ACTIVE_STOPWORDS = DEFAULT_STOPWORDS.copy()
 _stopwords_loaded = False
@@ -629,6 +570,18 @@ async def get_resume_state(chat_id):
     return doc.get("last_id", 0) if doc else 0
 
 
+async def get_clean_words():
+    if cw_db is None:
+        return DEFAULT_CLEAN_WORDS
+    try:
+        doc = await cw_db.find_one({"id": "words"})
+        if doc is None or doc.get("use_default", True):
+            return DEFAULT_CLEAN_WORDS
+        return doc.get("list", [])
+    except Exception:
+        return DEFAULT_CLEAN_WORDS
+
+
 async def get_idx_settings():
     default_settings = {
         "min_size": 0,
@@ -654,6 +607,20 @@ async def get_idx_settings():
 async def save_idx_settings(key, value):
     if idx_db is not None:
         await idx_db.update_one({"id": "config"}, {"$set": {key: value}}, upsert=True)
+
+
+def clean_filename(name: str, clean_words: list) -> str:
+    if not name:
+        return "File"
+    if any(w.lower() in ["mkv", "sandalwood"] for w in clean_words):
+        name = re.sub(r"(?i)\[?@?sandalwood[^\]\s]*\]?", "", name)
+        name = re.sub(r"(?i)\b(sandalwood|mkv|mp4|avi|webm|zip|rar)\b", "", name)
+    name = re.sub(r"[_.-]", " ", name)
+    for word in clean_words:
+        if word.lower() in ["mkv", "sandalwood", "mp4", "avi", "webm", "zip", "rar"]:
+            continue
+        name = re.sub(rf"(?i){re.escape(word)}", "", name)
+    return re.sub(r"\s+", " ", name).strip()
 
 
 def parse_channels(chan_var):
@@ -1839,6 +1806,13 @@ USER_MESSAGE_LOG, MUTED_USERS, MUTED_PROCESSING_LOCK = defaultdict(list), {}, se
 ADMIN_CACHE = {}
 _GC_STARTED = False
 
+async def _delete_after(msg: Message, delay: int):
+    await asyncio.sleep(delay)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
 
 async def is_exempt(
     client: Client, chat_id: int, user_id: int, chat_type: enums.ChatType
@@ -1906,8 +1880,7 @@ async def ironclad_antiflood_shield(client: Client, message: Message):
                 await message.delete()
             except (MessageDeleteForbidden, FloodWait, Exception):
                 pass
-            message.stop_propagation()
-            return
+            raise StopPropagation
         else:
             del MUTED_USERS[user_id]
 
@@ -1916,8 +1889,7 @@ async def ironclad_antiflood_shield(client: Client, message: Message):
 
     if len(USER_MESSAGE_LOG[user_id]) > 5:
         if user_id in MUTED_PROCESSING_LOCK:
-            message.stop_propagation()
-            return
+            raise StopPropagation
 
         MUTED_PROCESSING_LOCK.add(user_id)
         MUTED_USERS[user_id] = now + 600
@@ -1940,13 +1912,13 @@ async def ironclad_antiflood_shield(client: Client, message: Message):
                     chat_id=chat_id,
                     text=f"🛑 **Anti-Flood Triggered!**\n\n{message.from_user.mention} has been muted for **10 minutes** for spamming requests.",
                 )
-                asyncio.create_task(delete_after_delay(warn, 10))
+                asyncio.create_task(_delete_after(warn, 10))
             except (ChatAdminRequired, UserAdminInvalid):
                 warn = await client.send_message(
                     chat_id=chat_id,
                     text=f"⚠️ {message.from_user.mention}, please slow down! Your requests are being ignored for **10 minutes**.",
                 )
-                asyncio.create_task(delete_after_delay(warn, 10))
+                asyncio.create_task(_delete_after(warn, 10))
             except FloodWait as e:
                 await asyncio.sleep(e.value + 1)
             except Exception as e:
@@ -1957,17 +1929,41 @@ async def ironclad_antiflood_shield(client: Client, message: Message):
                     chat_id=chat_id,
                     text="🛑 **Anti-Flood Shield Triggered!**\nYou sent too many commands. Please wait 10 minutes before sending more messages.",
                 )
-                asyncio.create_task(delete_after_delay(warn, 10))
+                asyncio.create_task(_delete_after(warn, 10))
             except Exception:
                 pass
 
         MUTED_PROCESSING_LOCK.discard(user_id)
-        message.stop_propagation()
+        raise StopPropagation
 
 
 # ============================================================
 # 📝 CUSTOM UI SETTINGS COMMANDS
 # ============================================================
+
+def parse_button_cmd(text):
+    try:
+        if "|" in text:
+            parts = text.split(None, 1)[1].split("|", 1)
+            return parts[0].strip(), parts[1].strip()
+        match = re.search(r'["“]([^"”]+)["”]\s+(https?://\S+)', text)
+        if match:
+            return match.group(1).strip(), match.group(2).strip()
+    except Exception:
+        pass
+    return None, None
+
+
+def format_btn_list(btns):
+    if not btns:
+        return "No custom buttons."
+    return "".join(
+        [
+            f"**{i}.** `{b['text']}` | Layout: `{b['layout']}` | Color: `{b['color']}`\n"
+            for i, b in enumerate(btns, 1)
+        ]
+    )
+
 @Client.on_message(filters.command("setstarttext") & admin_filter)
 async def set_start_text(client, message):
     if len(message.command) < 2:
