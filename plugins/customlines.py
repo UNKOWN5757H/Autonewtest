@@ -65,14 +65,21 @@ except ImportError:
 
 try:
     from pyrogram.enums import ButtonStyle
-    BTN_PRIMARY, BTN_SUCCESS, BTN_DANGER = getattr(ButtonStyle, "PRIMARY", 1), getattr(ButtonStyle, "SUCCESS", 3), getattr(ButtonStyle, "DANGER", 4)
+
+    BTN_PRIMARY, BTN_SUCCESS, BTN_DANGER = (
+        getattr(ButtonStyle, "PRIMARY", 1),
+        getattr(ButtonStyle, "SUCCESS", 3),
+        getattr(ButtonStyle, "DANGER", 4),
+    )
 except ImportError:
     BTN_PRIMARY, BTN_SUCCESS, BTN_DANGER = 1, 3, 4
 
 # ============================================================
 # ⚙️ MONGODB & GLOBALS SETUP (MERGED)
 # ============================================================
-_DB_CLIENT = _BOT_DB = _broadcast_col = _fsub_db = _vip_db = _b_settings_db = _filter_col = None
+_DB_CLIENT = _BOT_DB = _broadcast_col = _fsub_db = _vip_db = _b_settings_db = (
+    _filter_col
+) = None
 
 try:
     _DB_CLIENT = AsyncIOMotorClient(info.DATABASE_URI)
@@ -97,6 +104,7 @@ _WAITING_REQUESTS = {}
 if not hasattr(info, "REPAIR_MODE"):
     info.REPAIR_MODE = False
 
+
 # ============================================================
 # 🛑 UNIFIED CUSTOM LISTENER (Prevents Media Block & /start Hijack)
 # ============================================================
@@ -108,6 +116,7 @@ async def custom_listener(client: Client, message: Message):
         if not future.done():
             future.set_result(message)
         message.stop_propagation()
+
 
 async def native_listen(
     client: Client, chat_id: int, user_id: int, timeout: int = 120
@@ -121,16 +130,22 @@ async def native_listen(
         _WAITING_REQUESTS.pop((chat_id, user_id), None)
         raise asyncio.TimeoutError
 
+
 # ============================================================
 # 🛠️ BOT SETTINGS & REPAIR MODE (/repairmode, /adminsettings)
 # ============================================================
-@Client.on_message(filters.command("repairmode") & admin_filter & (filters.private | filters.group))
+@Client.on_message(
+    filters.command("repairmode") & admin_filter & (filters.private | filters.group)
+)
 async def toggle_repair_mode(bot: Client, message: Message):
     if len(message.command) > 1:
         arg = message.command[1].lower()
-        if arg in ["on", "true", "enable"]: info.REPAIR_MODE = True
-        elif arg in ["off", "false", "disable"]: info.REPAIR_MODE = False
-        else: info.REPAIR_MODE = not getattr(info, "REPAIR_MODE", False)
+        if arg in ["on", "true", "enable"]:
+            info.REPAIR_MODE = True
+        elif arg in ["off", "false", "disable"]:
+            info.REPAIR_MODE = False
+        else:
+            info.REPAIR_MODE = not getattr(info, "REPAIR_MODE", False)
     else:
         info.REPAIR_MODE = not getattr(info, "REPAIR_MODE", False)
 
@@ -143,19 +158,35 @@ async def toggle_repair_mode(bot: Client, message: Message):
 
     await message.reply_text(text)
 
-@Client.on_message(filters.command("adminsettings") & admin_filter & (filters.private | filters.group))
+
+@Client.on_message(
+    filters.command("adminsettings") & admin_filter & (filters.private | filters.group)
+)
 async def show_admin_settings(bot: Client, message: Message):
-    repair_status = "🟢 ENABLED" if getattr(info, "REPAIR_MODE", False) else "🔴 DISABLED"
-    fsub_status = "🟢 ENABLED" if getattr(info, "IS_FSUB_ENABLED", True) else "🔴 DISABLED"
+    repair_status = (
+        "🟢 ENABLED" if getattr(info, "REPAIR_MODE", False) else "🔴 DISABLED"
+    )
+    fsub_status = (
+        "🟢 ENABLED" if getattr(info, "IS_FSUB_ENABLED", True) else "🔴 DISABLED"
+    )
 
     text = "⚙️ **Current Admin Settings Dashboard**\n━━━━━━━━━━━━━━━━━━━━━\n\n"
     text += f"🛠️ **Repair Mode:** {repair_status}\n🔐 **Force Subscribe:** {fsub_status}\n\n"
-    text += f"📢 **Main FSub Channel:** <code>{info.AUTH_CHANNEL}</code>\n" if getattr(info, "AUTH_CHANNEL", None) else "📢 **Main FSub Channel:** ❌ Not Set\n"
-    text += f"📨 **Request FSub Channel:** <code>{info.REQ_CHANNEL}</code>\n" if getattr(info, "REQ_CHANNEL", None) else "📨 **Request FSub Channel:** ❌ Not Set\n"
+    text += (
+        f"📢 **Main FSub Channel:** <code>{info.AUTH_CHANNEL}</code>\n"
+        if getattr(info, "AUTH_CHANNEL", None)
+        else "📢 **Main FSub Channel:** ❌ Not Set\n"
+    )
+    text += (
+        f"📨 **Request FSub Channel:** <code>{info.REQ_CHANNEL}</code>\n"
+        if getattr(info, "REQ_CHANNEL", None)
+        else "📨 **Request FSub Channel:** ❌ Not Set\n"
+    )
 
     admin_count = len(get_admin_list())
     text += f"\n👥 **Total Admins Configured:** `{admin_count}`\n\n━━━━━━━━━━━━━━━━━━━━━\n💡 *Use commands like `/repairmode` or `/disablefsub` to toggle these values.*"
     await message.reply_text(text)
+
 
 # ============================================================
 # 💾 DATABASE BACKUP ENGINE (/dbbackup, /dbrestore, /dbstats)
@@ -171,14 +202,18 @@ async def auto_backup_task(bot: Client):
         next_backup_time = last_backup_time + BACKUP_INTERVAL
         await asyncio.sleep(BACKUP_INTERVAL)
 
-        if not _BOT_DB or not target_admin_id: continue
+        if not _BOT_DB or not target_admin_id:
+            continue
         try:
             file_path = await generate_backup_file()
             caption = f"🔄 **Automated Daily Database Backup**\n\n📅 Date: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
-            await bot.send_document(chat_id=target_admin_id, document=file_path, caption=caption)
+            await bot.send_document(
+                chat_id=target_admin_id, document=file_path, caption=caption
+            )
             os.remove(file_path)
         except Exception as e:
             logger.error(f"Auto-backup failed: {e}")
+
 
 async def generate_backup_file() -> str:
     collections = await _BOT_DB.list_collection_names()
@@ -192,6 +227,7 @@ async def generate_backup_file() -> str:
         f.write(dumps(backup_data, indent=4))
     return file_name
 
+
 @Client.on_message(filters.command("dbbackup") & admin_filter)
 async def db_backup_cmd(bot: Client, message: Message):
     status_msg = await message.reply_text("⏳ **Generating database backup...**")
@@ -204,10 +240,15 @@ async def db_backup_cmd(bot: Client, message: Message):
     except Exception as e:
         await status_msg.edit_text(f"⚠️ **Backup Failed!**\n\nError: `{e}`")
 
+
 @Client.on_message(filters.command("dbrestore") & admin_filter)
 async def db_restore_cmd(bot: Client, message: Message):
-    if not getattr(message, "reply_to_message", None) or not getattr(message.reply_to_message, "document", None):
-        return await message.reply_text("⚙️ **Usage:**\nReply to a previously generated backup `.json` file with `/dbrestore`.")
+    if not getattr(message, "reply_to_message", None) or not getattr(
+        message.reply_to_message, "document", None
+    ):
+        return await message.reply_text(
+            "⚙️ **Usage:**\nReply to a previously generated backup `.json` file with `/dbrestore`."
+        )
     doc = message.reply_to_message.document
     if not doc.file_name.endswith(".json"):
         return await message.reply_text("❌ **Invalid File Format!**")
@@ -215,20 +256,26 @@ async def db_restore_cmd(bot: Client, message: Message):
     status_msg = await message.reply_text("⏳ **Restoring database...**")
     try:
         file_path = await message.reply_to_message.download()
-        with open(file_path, "r", encoding="utf-8") as f: backup_data = loads(f.read())
+        with open(file_path, "r", encoding="utf-8") as f:
+            backup_data = loads(f.read())
         restored_colls = restored_docs = 0
 
         for coll_name, docs in backup_data.items():
             if docs:
                 await _BOT_DB[coll_name].delete_many({})
                 await _BOT_DB[coll_name].insert_many(docs)
-                restored_colls += 1; restored_docs += len(docs)
+                restored_colls += 1
+                restored_docs += len(docs)
 
         os.remove(file_path)
-        await status_msg.edit_text(f"✅ **Database Restored Successfully!**\n\n📁 **Collections:** `{restored_colls}`\n📄 **Documents:** `{restored_docs}`")
+        await status_msg.edit_text(
+            f"✅ **Database Restored Successfully!**\n\n📁 **Collections:** `{restored_colls}`\n📄 **Documents:** `{restored_docs}`"
+        )
     except Exception as e:
         await status_msg.edit_text(f"⚠️ **Restore Failed!**\n\nError: `{e}`")
-        if "file_path" in locals() and os.path.exists(file_path): os.remove(file_path)
+        if "file_path" in locals() and os.path.exists(file_path):
+            os.remove(file_path)
+
 
 @Client.on_message(filters.command("dbstats") & admin_filter)
 async def db_stats_cmd(bot: Client, message: Message):
@@ -245,63 +292,102 @@ async def db_stats_cmd(bot: Client, message: Message):
     except Exception as e:
         await message.reply_text(f"⚠️ **Failed to fetch stats:**\n`{e}`")
 
+
 @Client.on_message(filters.command("dbschedule") & admin_filter)
 async def db_schedule_cmd(bot: Client, message: Message):
     if not scheduler_running:
         asyncio.create_task(auto_backup_task(bot))
-        return await message.reply_text("✅ **Auto-backup scheduler initiated!**\nThe first automated backup will run in 24 hours.")
+        return await message.reply_text(
+            "✅ **Auto-backup scheduler initiated!**\nThe first automated backup will run in 24 hours."
+        )
 
     if next_backup_time:
         time_left = next_backup_time - time.time()
         hours, remainder = divmod(int(time_left), 3600)
         minutes, seconds = divmod(remainder, 60)
-        await message.reply_text(f"⏰ **Scheduled Backup Status**\n\n🟢 **Status:** `Active`\n⏳ **Next Backup In:** `{hours}h {minutes}m {seconds}s`")
+        await message.reply_text(
+            f"⏰ **Scheduled Backup Status**\n\n🟢 **Status:** `Active`\n⏳ **Next Backup In:** `{hours}h {minutes}m {seconds}s`"
+        )
     else:
         await message.reply_text("⏰ Scheduler is active but time is calculating...")
+
 
 # ============================================================
 # 📢 INLINE PROMOTIONS ENGINE (/addpromo, /delpromo)
 # ============================================================
-@Client.on_message(filters.command("addpromo") & admin_filter & (filters.private | filters.group))
+@Client.on_message(
+    filters.command("addpromo") & admin_filter & (filters.private | filters.group)
+)
 async def add_promo_handler(bot: Client, message: Message):
     text = message.text.split(None, 1)[1] if len(message.command) > 1 else ""
     match = re.search(r'"([^"]+)"\s+(https?://\S+)', text)
 
-    if not match: return await message.reply_text('⚙️ **Usage:**\n`/addpromo "Button Text" https://example.com`\n\n⚠️ Ensure the button text is inside double quotes `" "` followed by a valid URL.')
+    if not match:
+        return await message.reply_text(
+            '⚙️ **Usage:**\n`/addpromo "Button Text" https://example.com`\n\n⚠️ Ensure the button text is inside double quotes `" "` followed by a valid URL.'
+        )
 
     btn_text, btn_url = match.group(1), match.group(2)
     await _plugin_db.add_promo(btn_text, btn_url)
-    await message.reply_text(f"✅ **Promo Added Successfully!**\n\n**Text:** `{btn_text}`\n**URL:** {btn_url}", disable_web_page_preview=True)
+    await message.reply_text(
+        f"✅ **Promo Added Successfully!**\n\n**Text:** `{btn_text}`\n**URL:** {btn_url}",
+        disable_web_page_preview=True,
+    )
 
-@Client.on_message(filters.command("delpromo") & admin_filter & (filters.private | filters.group))
+
+@Client.on_message(
+    filters.command("delpromo") & admin_filter & (filters.private | filters.group)
+)
 async def del_promo_handler(bot: Client, message: Message):
-    if len(message.command) < 2: return await message.reply_text("⚙️ **Usage:**\n`/delpromo https://example.com`")
+    if len(message.command) < 2:
+        return await message.reply_text(
+            "⚙️ **Usage:**\n`/delpromo https://example.com`"
+        )
     btn_url = message.command[1]
     deleted = await _plugin_db.del_promo(btn_url)
-    if deleted: await message.reply_text(f"🗑️ **Promo deleted successfully!**\n\n**URL:** {btn_url}", disable_web_page_preview=True)
-    else: await message.reply_text(f"❌ **Promo not found!**\nCould not find any promo matching URL: {btn_url}", disable_web_page_preview=True)
+    if deleted:
+        await message.reply_text(
+            f"🗑️ **Promo deleted successfully!**\n\n**URL:** {btn_url}",
+            disable_web_page_preview=True,
+        )
+    else:
+        await message.reply_text(
+            f"❌ **Promo not found!**\nCould not find any promo matching URL: {btn_url}",
+            disable_web_page_preview=True,
+        )
 
-@Client.on_message(filters.command("listpromos") & admin_filter & (filters.private | filters.group))
+
+@Client.on_message(
+    filters.command("listpromos") & admin_filter & (filters.private | filters.group)
+)
 async def list_promo_handler(bot: Client, message: Message):
     promos = await _plugin_db.get_all_promos()
-    if not promos: return await message.reply_text("⚠️ **No active promotional links found in the database.**")
+    if not promos:
+        return await message.reply_text(
+            "⚠️ **No active promotional links found in the database.**"
+        )
 
     text = "📢 **Current Promotional Links:**\n\n"
-    for i, p in enumerate(promos, 1): text += f"**{i}. Text:** `{p['text']}`\n**🔗 URL:** {p['url']}\n\n"
+    for i, p in enumerate(promos, 1):
+        text += f"**{i}. Text:** `{p['text']}`\n**🔗 URL:** {p['url']}\n\n"
     await message.reply_text(text, disable_web_page_preview=True)
+
 
 async def get_promo_buttons() -> list:
     promos = await _plugin_db.get_all_promos()
     return [InlineKeyboardButton(p["text"], url=p["url"]) for p in promos]
 
+
 # ============================================================
 # 📤 BROADCAST ENGINE (/broadcast, /group_broadcast)
 # ============================================================
 def get_progress_bar(current, total):
-    if total == 0: return "[░░░░░░░░░░] 0.0%"
+    if total == 0:
+        return "[░░░░░░░░░░] 0.0%"
     percent = (current / total) * 100
     filled = int(percent / 10)
     return f"[{'█' * filled}{'░' * (10 - filled)}] {percent:.1f}%"
+
 
 async def bcast_cleaner_worker(bot: Client):
     while True:
@@ -311,11 +397,17 @@ async def bcast_cleaner_worker(bot: Client):
                 cursor = _broadcast_col.find({"delete_at": {"$lte": now}})
                 docs = await cursor.to_list(length=100)
                 for doc in docs:
-                    try: await bot.delete_messages(chat_id=doc["chat_id"], message_ids=doc["message_id"])
-                    except Exception: pass
+                    try:
+                        await bot.delete_messages(
+                            chat_id=doc["chat_id"], message_ids=doc["message_id"]
+                        )
+                    except Exception:
+                        pass
                     await _broadcast_col.delete_one({"_id": doc["_id"]})
-        except Exception: pass
+        except Exception:
+            pass
         await asyncio.sleep(60)
+
 
 @Client.on_message(filters.group | filters.private, group=-100)
 async def init_worker(bot: Client, message):
@@ -324,50 +416,99 @@ async def init_worker(bot: Client, message):
         worker_started = True
         _WORKER_TASK = asyncio.create_task(bcast_cleaner_worker(bot))
 
+
 async def send_and_schedule_delete(bot: Client, chat_id: int, message: Message):
     try:
         sent_msg = None
-        try: sent_msg = await message.copy(chat_id=chat_id, disable_notification=True)
+        try:
+            sent_msg = await message.copy(chat_id=chat_id, disable_notification=True)
         except FloodWait as e:
             await asyncio.sleep(e.value + 1)
             sent_msg = await message.copy(chat_id=chat_id, disable_notification=True)
         except Exception:
-            try: sent_msg = await message.forward(chat_id=chat_id, disable_notification=True)
+            try:
+                sent_msg = await message.forward(
+                    chat_id=chat_id, disable_notification=True
+                )
             except FloodWait as e:
                 await asyncio.sleep(e.value + 1)
-                sent_msg = await message.forward(chat_id=chat_id, disable_notification=True)
+                sent_msg = await message.forward(
+                    chat_id=chat_id, disable_notification=True
+                )
             except Exception:
-                if getattr(message, "photo", None): sent_msg = await bot.send_photo(chat_id, message.photo.file_id, caption=message.caption, disable_notification=True)
-                elif getattr(message, "video", None): sent_msg = await bot.send_video(chat_id, message.video.file_id, caption=message.caption, disable_notification=True)
-                elif getattr(message, "document", None): sent_msg = await bot.send_document(chat_id, message.document.file_id, caption=message.caption, disable_notification=True)
-                else: sent_msg = await bot.send_message(chat_id, message.text, disable_notification=True)
+                if getattr(message, "photo", None):
+                    sent_msg = await bot.send_photo(
+                        chat_id,
+                        message.photo.file_id,
+                        caption=message.caption,
+                        disable_notification=True,
+                    )
+                elif getattr(message, "video", None):
+                    sent_msg = await bot.send_video(
+                        chat_id,
+                        message.video.file_id,
+                        caption=message.caption,
+                        disable_notification=True,
+                    )
+                elif getattr(message, "document", None):
+                    sent_msg = await bot.send_document(
+                        chat_id,
+                        message.document.file_id,
+                        caption=message.caption,
+                        disable_notification=True,
+                    )
+                else:
+                    sent_msg = await bot.send_message(
+                        chat_id, message.text, disable_notification=True
+                    )
 
         if sent_msg and _broadcast_col is not None:
-            await _broadcast_col.insert_one({"chat_id": chat_id, "message_id": sent_msg.id, "delete_at": time.time() + DELETE_DELAY})
+            await _broadcast_col.insert_one(
+                {
+                    "chat_id": chat_id,
+                    "message_id": sent_msg.id,
+                    "delete_at": time.time() + DELETE_DELAY,
+                }
+            )
             return 200, None
         return 500, "Unknown Error"
     except FloodWait as e:
         await asyncio.sleep(e.value + 1)
         return await send_and_schedule_delete(bot, chat_id, message)
-    except (UserIsBlocked, InputUserDeactivated, UserDeactivatedBan): return 400, "Blocked/Deleted"
-    except PeerIdInvalid: return 400, "Invalid"
-    except ChatWriteForbidden: return 400, "Left"
-    except MessageTooLong: return 400, "MEDIA_CAPTION_TOO_LONG"
-    except Exception as e: return 500, str(e)
+    except (UserIsBlocked, InputUserDeactivated, UserDeactivatedBan):
+        return 400, "Blocked/Deleted"
+    except PeerIdInvalid:
+        return 400, "Invalid"
+    except ChatWriteForbidden:
+        return 400, "Left"
+    except MessageTooLong:
+        return 400, "MEDIA_CAPTION_TOO_LONG"
+    except Exception as e:
+        return 500, str(e)
+
 
 @Client.on_message(filters.command("broadcast") & admin_filter & filters.reply)
 async def user_broadcast(bot: Client, message: Message):
     b_msg = message.reply_to_message
-    if not b_msg: return await message.reply_text("⚠️ **Reply to the message you want to broadcast.**")
+    if not b_msg:
+        return await message.reply_text(
+            "⚠️ **Reply to the message you want to broadcast.**"
+        )
 
     status_msg = await message.reply_text("⏳ **Fetching user database...**")
     try:
         users_cursor = await _db.get_all_users()
-        users = await users_cursor.to_list(length=None) if hasattr(users_cursor, "to_list") else list(users_cursor)
-    except Exception as e: return await status_msg.edit_text(f"❌ **Database Error:** `{e}`")
+        users = (
+            await users_cursor.to_list(length=None)
+            if hasattr(users_cursor, "to_list")
+            else list(users_cursor)
+        )
+    except Exception as e:
+        return await status_msg.edit_text(f"❌ **Database Error:** `{e}`")
 
     total_users = len(users)
-    if total_users == 0: return await status_msg.edit_text("⚠️ **No users found in the database.**")
+    if total_users == 0:
+        return await status_msg.edit_text("⚠️ **No users found in the database.**")
 
     await status_msg.edit_text(f"🚀 **Broadcasting to {total_users} users...**")
     start_time = time.time()
@@ -377,36 +518,59 @@ async def user_broadcast(bot: Client, message: Message):
         user_id = int(user.get("id") or user.get("user_id"))
         status, _ = await send_and_schedule_delete(bot, user_id, b_msg)
 
-        if status == 200: success += 1
+        if status == 200:
+            success += 1
         elif status == 400:
             blocked += 1
             await _db.delete_user(user_id)
-        else: failed += 1
+        else:
+            failed += 1
 
         done += 1
         if done % 25 == 0 or done == total_users:
-            try: await status_msg.edit_text(f"📢 **User Broadcast Progress**\n{get_progress_bar(done, total_users)}\n\n👥 **Total:** `{total_users}`\n✅ **Sent:** `{success}`\n🚫 **Dead/Blocked:** `{blocked}`\n⚠️ **Failed:** `{failed}`\n📦 **Processed:** `{done}/{total_users}`")
-            except FloodWait as e: await asyncio.sleep(e.value + 1)
-            except Exception: pass
+            try:
+                await status_msg.edit_text(
+                    f"📢 **User Broadcast Progress**\n{get_progress_bar(done, total_users)}\n\n👥 **Total:** `{total_users}`\n✅ **Sent:** `{success}`\n🚫 **Dead/Blocked:** `{blocked}`\n⚠️ **Failed:** `{failed}`\n📦 **Processed:** `{done}/{total_users}`"
+                )
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 1)
+            except Exception:
+                pass
         await asyncio.sleep(0.3)
 
     time_taken = datetime.timedelta(seconds=int(time.time() - start_time))
-    time_str = f"{DELETE_DELAY // 3600} hours" if DELETE_DELAY >= 3600 else f"{(DELETE_DELAY % 3600) // 60} minutes"
-    await status_msg.edit_text(f"✅ **User Broadcast Completed!**\n\n🕒 **Duration:** `{time_taken}`\n👥 **Total:** `{total_users}`\n✅ **Successful:** `{success}`\n🚫 **Removed (Dead):** `{blocked}`\n⚠️ **Failed:** `{failed}`\n\n⏳ *These messages will vanish silently in {time_str}.*")
+    time_str = (
+        f"{DELETE_DELAY // 3600} hours"
+        if DELETE_DELAY >= 3600
+        else f"{(DELETE_DELAY % 3600) // 60} minutes"
+    )
+    await status_msg.edit_text(
+        f"✅ **User Broadcast Completed!**\n\n🕒 **Duration:** `{time_taken}`\n👥 **Total:** `{total_users}`\n✅ **Successful:** `{success}`\n🚫 **Removed (Dead):** `{blocked}`\n⚠️ **Failed:** `{failed}`\n\n⏳ *These messages will vanish silently in {time_str}.*"
+    )
+
 
 @Client.on_message(filters.command("group_broadcast") & admin_filter & filters.reply)
 async def group_broadcast(bot: Client, message: Message):
     b_msg = message.reply_to_message
-    if not b_msg: return await message.reply_text("⚠️ **Reply to the message you want to broadcast.**")
+    if not b_msg:
+        return await message.reply_text(
+            "⚠️ **Reply to the message you want to broadcast.**"
+        )
 
     status_msg = await message.reply_text("⏳ **Fetching chat database...**")
     try:
         chats_cursor = await _db.get_all_chats()
-        chats = await chats_cursor.to_list(length=None) if hasattr(chats_cursor, "to_list") else list(chats_cursor)
-    except Exception as e: return await status_msg.edit_text(f"❌ **Database Error:** `{e}`")
+        chats = (
+            await chats_cursor.to_list(length=None)
+            if hasattr(chats_cursor, "to_list")
+            else list(chats_cursor)
+        )
+    except Exception as e:
+        return await status_msg.edit_text(f"❌ **Database Error:** `{e}`")
 
     total_chats = len(chats)
-    if total_chats == 0: return await status_msg.edit_text("⚠️ **No groups found in the database.**")
+    if total_chats == 0:
+        return await status_msg.edit_text("⚠️ **No groups found in the database.**")
 
     await status_msg.edit_text(f"🚀 **Broadcasting to {total_chats} groups...**")
     start_time = time.time()
@@ -416,23 +580,39 @@ async def group_broadcast(bot: Client, message: Message):
         chat_id = int(chat.get("id") or chat.get("chat_id"))
         status, reason = await send_and_schedule_delete(bot, chat_id, b_msg)
 
-        if status == 200: success += 1
+        if status == 200:
+            success += 1
         elif status == 400 and reason in ["Left", "Blocked/Deleted"]:
             left += 1
-            try: await _db.disable_chat(chat_id, "Bot Removed")
-            except Exception: pass
-        else: failed += 1
+            try:
+                await _db.disable_chat(chat_id, "Bot Removed")
+            except Exception:
+                pass
+        else:
+            failed += 1
 
         done += 1
         if done % 15 == 0 or done == total_chats:
-            try: await status_msg.edit_text(f"🏘️ **Group Broadcast Progress**\n{get_progress_bar(done, total_chats)}\n\n💬 **Total:** `{total_chats}`\n✅ **Sent:** `{success}`\n🚷 **Kicked/Left:** `{left}`\n⚠️ **Failed:** `{failed}`\n📦 **Processed:** `{done}/{total_chats}`")
-            except FloodWait as e: await asyncio.sleep(e.value + 1)
-            except Exception: pass
+            try:
+                await status_msg.edit_text(
+                    f"🏘️ **Group Broadcast Progress**\n{get_progress_bar(done, total_chats)}\n\n💬 **Total:** `{total_chats}`\n✅ **Sent:** `{success}`\n🚷 **Kicked/Left:** `{left}`\n⚠️ **Failed:** `{failed}`\n📦 **Processed:** `{done}/{total_chats}`"
+                )
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 1)
+            except Exception:
+                pass
         await asyncio.sleep(0.5)
 
     time_taken = datetime.timedelta(seconds=int(time.time() - start_time))
-    time_str = f"{DELETE_DELAY // 3600} hours" if DELETE_DELAY >= 3600 else f"{(DELETE_DELAY % 3600) // 60} minutes"
-    await status_msg.edit_text(f"✅ **Group Broadcast Completed!**\n\n🕒 **Duration:** `{time_taken}`\n💬 **Total:** `{total_chats}`\n✅ **Successful:** `{success}`\n🚷 **Removed From:** `{left}`\n⚠️ **Failed:** `{failed}`\n\n⏳ *These messages will vanish silently in {time_str}.*")
+    time_str = (
+        f"{DELETE_DELAY // 3600} hours"
+        if DELETE_DELAY >= 3600
+        else f"{(DELETE_DELAY % 3600) // 60} minutes"
+    )
+    await status_msg.edit_text(
+        f"✅ **Group Broadcast Completed!**\n\n🕒 **Duration:** `{time_taken}`\n💬 **Total:** `{total_chats}`\n✅ **Successful:** `{success}`\n🚷 **Removed From:** `{left}`\n⚠️ **Failed:** `{failed}`\n\n⏳ *These messages will vanish silently in {time_str}.*"
+    )
+
 
 # ============================================================
 # 🔌 CHAT CONNECTION ENGINE (/connect, /disconnect)
@@ -440,70 +620,132 @@ async def group_broadcast(bot: Client, message: Message):
 @Client.on_message((filters.private | filters.group) & filters.command("connect"))
 async def addconnection(client, message):
     userid = get_uid(message)
-    if not userid: return await message.reply("You are anonymous admin. Use /connect in PM.")
+    if not userid:
+        return await message.reply("You are anonymous admin. Use /connect in PM.")
 
     if message.chat.type == enums.ChatType.PRIVATE:
-        try: cmd, group_id = message.text.split(" ", 1)
-        except Exception: return await message.reply_text("<b>Enter correct format!</b>\n\n<code>/connect groupid</code>", quote=True)
-    else: group_id = message.chat.id
+        try:
+            cmd, group_id = message.text.split(" ", 1)
+        except Exception:
+            return await message.reply_text(
+                "<b>Enter correct format!</b>\n\n<code>/connect groupid</code>",
+                quote=True,
+            )
+    else:
+        group_id = message.chat.id
 
     try:
         st = await client.get_chat_member(group_id, userid)
-        if st.status not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER] and userid not in get_admin_list():
-            return await message.reply_text("You should be an admin in the Given group!", quote=True)
-    except Exception: return await message.reply_text("Invalid Group ID!\n\nMake sure I'm present in your group!", quote=True)
+        if (
+            st.status
+            not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]
+            and userid not in get_admin_list()
+        ):
+            return await message.reply_text(
+                "You should be an admin in the Given group!", quote=True
+            )
+    except Exception:
+        return await message.reply_text(
+            "Invalid Group ID!\n\nMake sure I'm present in your group!", quote=True
+        )
 
     try:
         st = await client.get_chat_member(group_id, "me")
         if st.status == enums.ChatMemberStatus.ADMINISTRATOR:
             ttl = await client.get_chat(group_id)
-            if await add_connection(str(group_id), str(userid)): await message.reply_text(f"Successfully connected to **{ttl.title}**\nNow manage your group from my PM!", quote=True)
-            else: await message.reply_text("You're already connected to this chat!", quote=True)
-        else: await message.reply_text("Add me as an admin in group", quote=True)
-    except Exception: await message.reply_text("Some error occurred! Try again later.", quote=True)
+            if await add_connection(str(group_id), str(userid)):
+                await message.reply_text(
+                    f"Successfully connected to **{ttl.title}**\nNow manage your group from my PM!",
+                    quote=True,
+                )
+            else:
+                await message.reply_text(
+                    "You're already connected to this chat!", quote=True
+                )
+        else:
+            await message.reply_text("Add me as an admin in group", quote=True)
+    except Exception:
+        await message.reply_text("Some error occurred! Try again later.", quote=True)
+
 
 @Client.on_message((filters.private | filters.group) & filters.command("disconnect"))
 async def deleteconnection(client, message):
     userid = get_uid(message)
-    if not userid: return
+    if not userid:
+        return
 
-    if message.chat.type == enums.ChatType.PRIVATE: return await message.reply_text("Run /connections to view or disconnect from groups!", quote=True)
+    if message.chat.type == enums.ChatType.PRIVATE:
+        return await message.reply_text(
+            "Run /connections to view or disconnect from groups!", quote=True
+        )
     group_id = message.chat.id
 
     st = await client.get_chat_member(group_id, userid)
-    if st.status not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER] and userid not in get_admin_list(): return
+    if (
+        st.status
+        not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]
+        and userid not in get_admin_list()
+    ):
+        return
 
-    if await delete_connection(str(userid), str(group_id)): await message.reply_text("Successfully disconnected from this chat", quote=True)
-    else: await message.reply_text("This chat isn't connected to me!", quote=True)
+    if await delete_connection(str(userid), str(group_id)):
+        await message.reply_text("Successfully disconnected from this chat", quote=True)
+    else:
+        await message.reply_text("This chat isn't connected to me!", quote=True)
+
 
 @Client.on_message(filters.private & filters.command(["connections"]))
 async def connections(client, message):
     userid = get_uid(message)
     groupids = await all_connections(str(userid))
 
-    if not groupids: return await message.reply_text("There are no active connections!! Connect to some groups first.", quote=True)
+    if not groupids:
+        return await message.reply_text(
+            "There are no active connections!! Connect to some groups first.",
+            quote=True,
+        )
 
     buttons = []
     for groupid in groupids:
         try:
             ttl = await client.get_chat(int(groupid))
             act = " - ACTIVE" if await if_active(str(userid), str(groupid)) else ""
-            buttons.append([InlineKeyboardButton(text=f"{ttl.title}{act}", callback_data=f"groupcb:{groupid}:{act}")])
-        except Exception: pass
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"{ttl.title}{act}",
+                        callback_data=f"groupcb:{groupid}:{act}",
+                    )
+                ]
+            )
+        except Exception:
+            pass
 
-    if buttons: await message.reply_text("Your connected group details:\n\n", reply_markup=InlineKeyboardMarkup(buttons), quote=True)
-    else: await message.reply_text("There are no active connections!", quote=True)
+    if buttons:
+        await message.reply_text(
+            "Your connected group details:\n\n",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            quote=True,
+        )
+    else:
+        await message.reply_text("There are no active connections!", quote=True)
+
 
 # ============================================================
 # 📱 INTERACTIVE CHANNEL MANAGER DASHBOARD (/channels)
 # ============================================================
 async def build_channels_dashboard(client: Client, page: int = 1):
     chats_data = await _db.get_all_chats()
-    chats = await chats_data.to_list(length=None) if hasattr(chats_data, "to_list") else list(chats_data)
+    chats = (
+        await chats_data.to_list(length=None)
+        if hasattr(chats_data, "to_list")
+        else list(chats_data)
+    )
     channels = [chat for chat in chats if str(chat.get("id", "")).startswith("-100")]
 
     total_channels = len(channels)
-    if total_channels == 0: return "⚠️ **No channels found in database.**", None
+    if total_channels == 0:
+        return "⚠️ **No channels found in database.**", None
 
     page_size = 5
     total_pages = max(1, math.ceil(total_channels / page_size))
@@ -522,55 +764,102 @@ async def build_channels_dashboard(client: Client, page: int = 1):
             chat_obj = await client.get_chat(cid)
             member_count_str = str(chat_obj.members_count or "?")
             member_self = await client.get_chat_member(cid, "me")
-            if member_self.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]: status_tag = "👑 Admin"
-            else: status_tag = "👤 Member"
-        except Exception: pass
+            if member_self.status in [
+                enums.ChatMemberStatus.ADMINISTRATOR,
+                enums.ChatMemberStatus.OWNER,
+            ]:
+                status_tag = "👑 Admin"
+            else:
+                status_tag = "👤 Member"
+        except Exception:
+            pass
 
         text += f"• **{title}** (`{cid}`)\n  └ {status_tag} | 👥 `{member_count_str}` members\n\n"
-        buttons.append([InlineKeyboardButton(f"📢 {title}", callback_data=f"chan_info:{cid}"), InlineKeyboardButton("🚪 Leave", callback_data=f"chan_leave:{cid}:{page}")])
+        buttons.append(
+            [
+                InlineKeyboardButton(f"📢 {title}", callback_data=f"chan_info:{cid}"),
+                InlineKeyboardButton(
+                    "🚪 Leave", callback_data=f"chan_leave:{cid}:{page}"
+                ),
+            ]
+        )
 
     nav_row = []
-    if page > 1: nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"chan_page:{page-1}"))
-    if page < total_pages: nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"chan_page:{page+1}"))
-    if nav_row: buttons.append(nav_row)
+    if page > 1:
+        nav_row.append(
+            InlineKeyboardButton("⬅️ Prev", callback_data=f"chan_page:{page-1}")
+        )
+    if page < total_pages:
+        nav_row.append(
+            InlineKeyboardButton("Next ➡️", callback_data=f"chan_page:{page+1}")
+        )
+    if nav_row:
+        buttons.append(nav_row)
 
-    buttons.append([InlineKeyboardButton("🔄 Refresh Dashboard", callback_data=f"chan_page:{page}")])
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                "🔄 Refresh Dashboard", callback_data=f"chan_page:{page}"
+            )
+        ]
+    )
     return text, InlineKeyboardMarkup(buttons)
+
 
 @Client.on_message(filters.command("channels") & admin_filter)
 async def channels_dashboard_cmd(client: Client, message: Message):
     text, markup = await build_channels_dashboard(client, page=1)
     await message.reply_text(text, reply_markup=markup, disable_web_page_preview=True)
 
+
 @Client.on_callback_query(filters.regex(r"^chan_page:(\d+)") & admin_filter)
 async def channels_page_cb(client: Client, query: CallbackQuery):
     page = int(query.matches[0].group(1))
     text, markup = await build_channels_dashboard(client, page=page)
-    try: await query.message.edit_text(text, reply_markup=markup, disable_web_page_preview=True)
-    except MessageNotModified: pass
+    try:
+        await query.message.edit_text(
+            text, reply_markup=markup, disable_web_page_preview=True
+        )
+    except MessageNotModified:
+        pass
     await query.answer()
+
 
 @Client.on_callback_query(filters.regex(r"^chan_leave:(-?\d+):(\d+)") & admin_filter)
 async def channels_leave_cb(client: Client, query: CallbackQuery):
     cid = int(query.matches[0].group(1))
     page = int(query.matches[0].group(2))
-    try: await client.leave_chat(cid)
-    except Exception: pass
-    try: await _db.disable_chat(cid, "Admin Dashboard Left")
-    except Exception: pass
+    try:
+        await client.leave_chat(cid)
+    except Exception:
+        pass
+    try:
+        await _db.disable_chat(cid, "Admin Dashboard Left")
+    except Exception:
+        pass
 
     await query.answer(f"Left channel {cid}", show_alert=True)
     text, markup = await build_channels_dashboard(client, page=page)
-    try: await query.message.edit_text(text, reply_markup=markup, disable_web_page_preview=True)
-    except Exception: pass
+    try:
+        await query.message.edit_text(
+            text, reply_markup=markup, disable_web_page_preview=True
+        )
+    except Exception:
+        pass
+
 
 @Client.on_callback_query(filters.regex(r"^chan_info:(-?\d+)") & admin_filter)
 async def channels_info_cb(client: Client, query: CallbackQuery):
     cid = int(query.matches[0].group(1))
     try:
         chat = await client.get_chat(cid)
-        await query.answer(f"Title: {chat.title}\nID: {chat.id}\nMembers: {chat.members_count}", show_alert=True)
-    except Exception as e: await query.answer(f"Error fetching channel: {e}", show_alert=True)
+        await query.answer(
+            f"Title: {chat.title}\nID: {chat.id}\nMembers: {chat.members_count}",
+            show_alert=True,
+        )
+    except Exception as e:
+        await query.answer(f"Error fetching channel: {e}", show_alert=True)
+
 
 # ============================================================
 # 📄 EXPORT SCRIPTS
@@ -579,14 +868,24 @@ async def channels_info_cb(client: Client, query: CallbackQuery):
 async def export_users_cmd(bot: Client, message: Message):
     status = await message.reply_text("⏳ **Exporting users from database...**")
     users_data = await _db.get_all_users()
-    users = await users_data.to_list(length=None) if hasattr(users_data, "to_list") else list(users_data)
+    users = (
+        await users_data.to_list(length=None)
+        if hasattr(users_data, "to_list")
+        else list(users_data)
+    )
     total = len(users)
 
-    if total == 0: return await status.edit_text("⚠️ No users found in the database.")
+    if total == 0:
+        return await status.edit_text("⚠️ No users found in the database.")
 
     time_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     text = f"🧍 **User List Export**\n\n📅 Generated on: `{time_str} UTC`\n👥 Total Users: `{total}`\n\n"
-    data = "\n".join([f"{user.get('id', 'Unknown')} - {user.get('name', 'Unknown')}" for user in users])
+    data = "\n".join(
+        [
+            f"{user.get('id', 'Unknown')} - {user.get('name', 'Unknown')}"
+            for user in users
+        ]
+    )
 
     file = io.BytesIO(data.encode("utf-8"))
     file.name = "users_list.txt"
@@ -594,21 +893,32 @@ async def export_users_cmd(bot: Client, message: Message):
     await message.reply_document(document=file, caption=text)
     await status.delete()
 
+
 @Client.on_message(filters.command("exportgroups") & admin_filter)
 async def export_groups_cmd(bot: Client, message: Message):
     status = await message.reply_text("⏳ **Exporting groups from database...**")
     chats_data = await _db.get_all_chats()
-    chats = await chats_data.to_list(length=None) if hasattr(chats_data, "to_list") else list(chats_data)
+    chats = (
+        await chats_data.to_list(length=None)
+        if hasattr(chats_data, "to_list")
+        else list(chats_data)
+    )
     total = len(chats)
 
-    if total == 0: return await status.edit_text("⚠️ No groups found in the database.")
+    if total == 0:
+        return await status.edit_text("⚠️ No groups found in the database.")
 
     groups = [chat for chat in chats if not str(chat.get("id", "")).startswith("-100")]
     supergroups = [chat for chat in chats if str(chat.get("id", "")).startswith("-100")]
 
     time_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     text = f"💬 **Group Chats Export**\n\n📅 Generated on: `{time_str} UTC`\n🏘️ Total Chats: `{total}`\n👥 Groups: `{len(groups)}` | 📢 Supergroups: `{len(supergroups)}`\n\n"
-    data = "\n".join([f"{chat.get('id', 'Unknown')} - {chat.get('title', 'Unknown')}" for chat in chats])
+    data = "\n".join(
+        [
+            f"{chat.get('id', 'Unknown')} - {chat.get('title', 'Unknown')}"
+            for chat in chats
+        ]
+    )
 
     file = io.BytesIO(data.encode("utf-8"))
     file.name = "chats_list.txt"
@@ -616,19 +926,30 @@ async def export_groups_cmd(bot: Client, message: Message):
     await message.reply_document(document=file, caption=text)
     await status.delete()
 
+
 @Client.on_message(filters.command("exportchannels") & admin_filter)
 async def export_channels_cmd(bot: Client, message: Message):
     status = await message.reply_text("⏳ **Exporting channels from database...**")
     chats_data = await _db.get_all_chats()
-    chats = await chats_data.to_list(length=None) if hasattr(chats_data, "to_list") else list(chats_data)
+    chats = (
+        await chats_data.to_list(length=None)
+        if hasattr(chats_data, "to_list")
+        else list(chats_data)
+    )
     channels = [chat for chat in chats if str(chat.get("id", "")).startswith("-100")]
     total = len(channels)
 
-    if total == 0: return await status.edit_text("⚠️ No channels found in the database.")
+    if total == 0:
+        return await status.edit_text("⚠️ No channels found in the database.")
 
     time_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     text = f"📢 **Channel List Export**\n\n📅 Generated on: `{time_str} UTC`\n📺 Total Channels: `{total}`\n\n"
-    data = "\n".join([f"{chat.get('id', 'Unknown')} - {chat.get('title', 'Unknown')}" for chat in channels])
+    data = "\n".join(
+        [
+            f"{chat.get('id', 'Unknown')} - {chat.get('title', 'Unknown')}"
+            for chat in channels
+        ]
+    )
 
     file = io.BytesIO(data.encode("utf-8"))
     file.name = "channels_list.txt"
@@ -636,20 +957,32 @@ async def export_channels_cmd(bot: Client, message: Message):
     await message.reply_document(document=file, caption=text)
     await status.delete()
 
+
 # ============================================================
 # 🚪 JOIN REQUEST CATCHER & MANAGER
 # ============================================================
 @Client.on_chat_join_request()
 async def join_reqs_handler(bot: Client, join_req: ChatJoinRequest):
-    if not _join_reqs_db.isActive(): return
+    if not _join_reqs_db.isActive():
+        return
     user = join_req.from_user
     try:
-        await _join_reqs_db.add_user(user_id=user.id, first_name=user.first_name or "Unknown", username=user.username or "None", date=join_req.date)
-    except Exception as e: logger.error(f"Failed to log join request for {user.id}: {e}")
+        await _join_reqs_db.add_user(
+            user_id=user.id,
+            first_name=user.first_name or "Unknown",
+            username=user.username or "None",
+            date=join_req.date,
+        )
+    except Exception as e:
+        logger.error(f"Failed to log join request for {user.id}: {e}")
+
 
 @Client.on_message(filters.command("totalrequests") & admin_filter)
 async def total_requests(bot: Client, message: Message):
-    if not _join_reqs_db.isActive(): return await message.reply_text("⚠️ Join request tracking is not active (DB inactive).")
+    if not _join_reqs_db.isActive():
+        return await message.reply_text(
+            "⚠️ Join request tracking is not active (DB inactive)."
+        )
     try:
         total = await _join_reqs_db.total_requests()
         await message.reply_text(f"📨 **Total Join Requests:** <code>{total}</code>")
@@ -657,27 +990,44 @@ async def total_requests(bot: Client, message: Message):
         logger.error(f"Error fetching join requests: {e}")
         await message.reply_text(f"⚠️ Error: <code>{e}</code>")
 
+
 @Client.on_message(filters.command("purgerequests") & admin_filter)
 async def purge_requests(bot: Client, message: Message):
-    if not _join_reqs_db.isActive(): return await message.reply_text("⚠️ Join request tracking is not active (DB inactive).")
+    if not _join_reqs_db.isActive():
+        return await message.reply_text(
+            "⚠️ Join request tracking is not active (DB inactive)."
+        )
 
     uid = get_uid(message)
-    ask_msg = await message.reply_text("⚠️ **Are you sure you want to delete all join requests? (y/n)**")
+    ask_msg = await message.reply_text(
+        "⚠️ **Are you sure you want to delete all join requests? (y/n)**"
+    )
     try:
         resp = await native_listen(bot, message.chat.id, uid, timeout=60)
-        try: await ask_msg.delete()
-        except Exception: pass
+        try:
+            await ask_msg.delete()
+        except Exception:
+            pass
         if resp:
-            try: await resp.delete()
-            except Exception: pass
+            try:
+                await resp.delete()
+            except Exception:
+                pass
 
-        if not resp or not resp.text: return
+        if not resp or not resp.text:
+            return
         if resp.text.lower() == "y":
             count = await _join_reqs_db.clear_all()
-            await message.reply_text(f"✅ All join requests purged successfully. (<code>{count}</code> deleted)")
-        else: await message.reply_text("❌ Operation cancelled.")
-    except asyncio.TimeoutError: await message.reply_text("⌛ Timeout: No response, operation cancelled.")
-    except Exception as e: await message.reply_text(f"⚠️ Error clearing requests: <code>{e}</code>")
+            await message.reply_text(
+                f"✅ All join requests purged successfully. (<code>{count}</code> deleted)"
+            )
+        else:
+            await message.reply_text("❌ Operation cancelled.")
+    except asyncio.TimeoutError:
+        await message.reply_text("⌛ Timeout: No response, operation cancelled.")
+    except Exception as e:
+        await message.reply_text(f"⚠️ Error clearing requests: <code>{e}</code>")
+
 
 # ============================================================
 # ⚙️ MULTI-CHANNEL FORCESUB MANAGER
@@ -685,79 +1035,132 @@ async def purge_requests(bot: Client, message: Message):
 async def get_fsub_config():
     if _fsub_db is not None:
         doc = await _fsub_db.find_one({"_id": "config"})
-        if doc: return doc
-    return {"is_enabled": True, "max_count": 0, "rotation_enabled": False, "channels": {}}
+        if doc:
+            return doc
+    return {
+        "is_enabled": True,
+        "max_count": 0,
+        "rotation_enabled": False,
+        "channels": {},
+    }
+
 
 async def update_fsub_config(key, value):
-    if _fsub_db is not None: await _fsub_db.update_one({"_id": "config"}, {"$set": {key: value}}, upsert=True)
+    if _fsub_db is not None:
+        await _fsub_db.update_one(
+            {"_id": "config"}, {"$set": {key: value}}, upsert=True
+        )
+
 
 async def update_fsub_channels(channels_dict):
-    if _fsub_db is not None: await _fsub_db.update_one({"_id": "config"}, {"$set": {"channels": channels_dict}}, upsert=True)
+    if _fsub_db is not None:
+        await _fsub_db.update_one(
+            {"_id": "config"}, {"$set": {"channels": channels_dict}}, upsert=True
+        )
+
 
 async def add_vip(user_id: int):
-    if _vip_db is not None: await _vip_db.update_one({"user_id": user_id}, {"$set": {"is_vip": True}}, upsert=True)
+    if _vip_db is not None:
+        await _vip_db.update_one(
+            {"user_id": user_id}, {"$set": {"is_vip": True}}, upsert=True
+        )
+
 
 async def rem_vip(user_id: int):
-    if _vip_db is not None: await _vip_db.delete_one({"user_id": user_id})
+    if _vip_db is not None:
+        await _vip_db.delete_one({"user_id": user_id})
+
 
 async def is_vip(user_id: int):
-    if _vip_db is not None: return bool(await _vip_db.find_one({"user_id": user_id}))
+    if _vip_db is not None:
+        return bool(await _vip_db.find_one({"user_id": user_id}))
     return False
 
+
 async def get_all_vips():
-    if _vip_db is not None: return await _vip_db.find().to_list(length=None)
+    if _vip_db is not None:
+        return await _vip_db.find().to_list(length=None)
     return []
+
 
 async def get_invite_link(bot: Client, chat_id_str: str, config: dict) -> str:
     channels = config.get("channels", {})
     channel_data = channels.get(chat_id_str, {})
 
-    if channel_data.get("target"): return channel_data["target"]
-    if channel_data.get("link"): return channel_data["link"]
+    if channel_data.get("target"):
+        return channel_data["target"]
+    if channel_data.get("link"):
+        return channel_data["link"]
 
     try:
         chat_id_int = int(chat_id_str.strip())
         chat = await bot.get_chat(chat_id_int)
         is_req = channel_data.get("type") == "req"
-        invite = await bot.create_chat_invite_link(chat_id_int, creates_join_request=is_req)
+        invite = await bot.create_chat_invite_link(
+            chat_id_int, creates_join_request=is_req
+        )
 
         channels[chat_id_str]["link"] = invite.invite_link
         channels[chat_id_str]["title"] = chat.title
         await update_fsub_channels(channels)
         return invite.invite_link
-    except ChatAdminRequired: return ""
-    except Exception: return ""
+    except ChatAdminRequired:
+        return ""
+    except Exception:
+        return ""
 
-async def check_user_in_channel(bot: Client, channel_id: int, user_id: int, is_req: bool = False) -> bool:
+
+async def check_user_in_channel(
+    bot: Client, channel_id: int, user_id: int, is_req: bool = False
+) -> bool:
     try:
         member = await bot.get_chat_member(channel_id, user_id)
-        if member.status in [enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]: return True
-    except UserNotParticipant: pass
+        if member.status in [
+            enums.ChatMemberStatus.MEMBER,
+            enums.ChatMemberStatus.ADMINISTRATOR,
+            enums.ChatMemberStatus.OWNER,
+        ]:
+            return True
+    except UserNotParticipant:
+        pass
     except FloodWait as e:
         await asyncio.sleep(e.value + 1)
         return await check_user_in_channel(bot, channel_id, user_id, is_req)
-    except Exception: pass
+    except Exception:
+        pass
 
     if is_req:
         try:
-            if _join_reqs_db.isActive() and await _join_reqs_db.get_user(user_id): return True
-        except Exception: pass
+            if _join_reqs_db.isActive() and await _join_reqs_db.get_user(user_id):
+                return True
+        except Exception:
+            pass
     return False
 
-async def ForceSub(bot: Client, message: Message, file_id: str = None, mode: str = None) -> bool:
+
+async def ForceSub(
+    bot: Client, message: Message, file_id: str = None, mode: str = None
+) -> bool:
     user = getattr(message, "from_user", None)
-    if not user: return True
+    if not user:
+        return True
     user_id = user.id
 
-    if user_id in get_admin_list(): return True
-    if await is_vip(user_id): return True
+    if user_id in get_admin_list():
+        return True
+    if await is_vip(user_id):
+        return True
 
     config = await get_fsub_config()
-    if not config.get("is_enabled", True): return True
+    if not config.get("is_enabled", True):
+        return True
     channels_dict = config.get("channels", {})
-    if not channels_dict: return True
+    if not channels_dict:
+        return True
 
-    rotation_enabled, max_count = config.get("rotation_enabled", False), config.get("max_count", 0)
+    rotation_enabled, max_count = config.get("rotation_enabled", False), config.get(
+        "max_count", 0
+    )
 
     if rotation_enabled:
         eligible_channels = list(channels_dict.keys())
@@ -765,14 +1168,17 @@ async def ForceSub(bot: Client, message: Message, file_id: str = None, mode: str
             shift = int(time.time() / 3600) % len(eligible_channels)
             eligible_channels = eligible_channels[shift:] + eligible_channels[:shift]
     else:
-        eligible_channels = [k for k, v in channels_dict.items() if v.get("status") == "active"]
+        eligible_channels = [
+            k for k, v in channels_dict.items() if v.get("status") == "active"
+        ]
 
     not_joined_buttons = []
     channels_to_force = 0
 
     try:
         for chat_id_str in eligible_channels:
-            if max_count > 0 and channels_to_force >= max_count: break
+            if max_count > 0 and channels_to_force >= max_count:
+                break
 
             data = channels_dict[chat_id_str]
             chat_id = int(chat_id_str)
@@ -783,7 +1189,9 @@ async def ForceSub(bot: Client, message: Message, file_id: str = None, mode: str
                 link = await get_invite_link(bot, chat_id_str, config)
                 if link:
                     btn_text = "⚓ Request to Join" if is_req else "📢 Join Channel"
-                    not_joined_buttons.append([InlineKeyboardButton(btn_text, url=link)])
+                    not_joined_buttons.append(
+                        [InlineKeyboardButton(btn_text, url=link)]
+                    )
                     channels_to_force += 1
 
         if not not_joined_buttons:
@@ -791,32 +1199,59 @@ async def ForceSub(bot: Client, message: Message, file_id: str = None, mode: str
             return True
 
         cb_data = f"refresh_fsub_{file_id}" if file_id else "refresh_fsub_0"
-        not_joined_buttons.append([InlineKeyboardButton(text="✅ I've Joined", callback_data=cb_data)])
+        not_joined_buttons.append(
+            [InlineKeyboardButton(text="✅ I've Joined", callback_data=cb_data)]
+        )
 
         from plugins.custom_settings import get_bot_settings
+
         b_settings = await get_bot_settings()
         custom_fsub_img = b_settings.get("fsub_img", getattr(info, "FSUB_IMG", None))
 
         try:
             if custom_fsub_img and str(custom_fsub_img).strip():
-                try: await message.reply_photo(photo=custom_fsub_img, caption="**⚠️ Please join the channels below to get your file!**", reply_markup=InlineKeyboardMarkup(not_joined_buttons))
-                except Exception: await message.reply_text("**⚠️ Please join the channels below to get your file!**", reply_markup=InlineKeyboardMarkup(not_joined_buttons), disable_web_page_preview=True)
-            else: await message.reply_text("**⚠️ Please join the channels below to get your file!**", reply_markup=InlineKeyboardMarkup(not_joined_buttons), disable_web_page_preview=True)
-        except UserIsBlocked: return False
+                try:
+                    await message.reply_photo(
+                        photo=custom_fsub_img,
+                        caption="**⚠️ Please join the channels below to get your file!**",
+                        reply_markup=InlineKeyboardMarkup(not_joined_buttons),
+                    )
+                except Exception:
+                    await message.reply_text(
+                        "**⚠️ Please join the channels below to get your file!**",
+                        reply_markup=InlineKeyboardMarkup(not_joined_buttons),
+                        disable_web_page_preview=True,
+                    )
+            else:
+                await message.reply_text(
+                    "**⚠️ Please join the channels below to get your file!**",
+                    reply_markup=InlineKeyboardMarkup(not_joined_buttons),
+                    disable_web_page_preview=True,
+                )
+        except UserIsBlocked:
+            return False
         return False
-    except Exception: return True
+    except Exception:
+        return True
+
 
 @Client.on_callback_query(filters.regex(r"^refresh_fsub_(.*)"))
 async def refresh_fsub_callback(bot: Client, query: CallbackQuery):
     user_id, file_id = query.from_user.id, query.matches[0].group(1)
 
-    if await is_vip(user_id): return await query.answer("👑 VIP Verified!", show_alert=False)
+    if await is_vip(user_id):
+        return await query.answer("👑 VIP Verified!", show_alert=False)
 
     config = await get_fsub_config()
     channels_dict = config.get("channels", {})
-    rotation_enabled, max_count = config.get("rotation_enabled", False), config.get("max_count", 0)
+    rotation_enabled, max_count = config.get("rotation_enabled", False), config.get(
+        "max_count", 0
+    )
 
-    if not channels_dict: return await query.answer("Force subscribe is no longer required.", show_alert=True)
+    if not channels_dict:
+        return await query.answer(
+            "Force subscribe is no longer required.", show_alert=True
+        )
 
     if rotation_enabled:
         eligible_channels = list(channels_dict.keys())
@@ -824,17 +1259,22 @@ async def refresh_fsub_callback(bot: Client, query: CallbackQuery):
             shift = int(time.time() / 3600) % len(eligible_channels)
             eligible_channels = eligible_channels[shift:] + eligible_channels[:shift]
     else:
-        eligible_channels = [k for k, v in channels_dict.items() if v.get("status") == "active"]
+        eligible_channels = [
+            k for k, v in channels_dict.items() if v.get("status") == "active"
+        ]
 
     not_joined_buttons = []
     channels_to_force = 0
 
     for chat_id_str in eligible_channels:
-        if max_count > 0 and channels_to_force >= max_count: break
+        if max_count > 0 and channels_to_force >= max_count:
+            break
 
         data = channels_dict[chat_id_str]
         is_req = data.get("type") == "req"
-        is_participant = await check_user_in_channel(bot, int(chat_id_str), user_id, is_req)
+        is_participant = await check_user_in_channel(
+            bot, int(chat_id_str), user_id, is_req
+        )
 
         if not is_participant:
             link = await get_invite_link(bot, chat_id_str, config)
@@ -844,23 +1284,35 @@ async def refresh_fsub_callback(bot: Client, query: CallbackQuery):
                 channels_to_force += 1
 
     if channels_to_force > 0:
-        await query.answer("❌ You haven't joined all required channels yet!", show_alert=True)
+        await query.answer(
+            "❌ You haven't joined all required channels yet!", show_alert=True
+        )
         cb_data = f"refresh_fsub_{file_id}" if file_id else "refresh_fsub_0"
-        not_joined_buttons.append([InlineKeyboardButton(text="✅ I've Joined", callback_data=cb_data)])
-        try: await query.message.edit_reply_markup(InlineKeyboardMarkup(not_joined_buttons))
-        except MessageNotModified: pass
+        not_joined_buttons.append(
+            [InlineKeyboardButton(text="✅ I've Joined", callback_data=cb_data)]
+        )
+        try:
+            await query.message.edit_reply_markup(
+                InlineKeyboardMarkup(not_joined_buttons)
+            )
+        except MessageNotModified:
+            pass
     else:
         await _plugin_db.add_fsub_user(user_id)
-        try: await query.message.delete()
-        except Exception: pass
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
 
         await query.answer("✅ Subscriptions verified!", show_alert=False)
 
         if file_id and str(file_id) != "0":
             if file_id.startswith("search_") or file_id.startswith("hdra_"):
                 text = "✅ **Verification complete!**\n\n🔍 Your search is unlocked. Please click the button in the main group again to get your files!"
-                try: await bot.send_message(chat_id=user_id, text=text)
-                except Exception: pass
+                try:
+                    await bot.send_message(chat_id=user_id, text=text)
+                except Exception:
+                    pass
             else:
                 files_ = await get_file_details(file_id)
                 if files_:
@@ -872,49 +1324,92 @@ async def refresh_fsub_callback(bot: Client, query: CallbackQuery):
 
                     if getattr(info, "CUSTOM_FILE_CAPTION", None):
                         try:
-                            f_caption = info.CUSTOM_FILE_CAPTION.format(file_name=title, file_size=size, file_caption=f_caption)
-                        except Exception: pass
-                    if not f_caption: f_caption = f"<b>{title}</b>"
+                            f_caption = info.CUSTOM_FILE_CAPTION.format(
+                                file_name=title, file_size=size, file_caption=f_caption
+                            )
+                        except Exception:
+                            pass
+                    if not f_caption:
+                        f_caption = f"<b>{title}</b>"
 
                     try:
-                        btn = [[InlineKeyboardButton("🎥 ಕನ್ನಡ ಹೊಸ ಮೂವೀಗಳು 🎥", url="https://t.me/sandalwood_kannada_moviesz")]]
-                        await bot.send_cached_media(chat_id=user_id, file_id=db_file_id, caption=f_caption, reply_markup=InlineKeyboardMarkup(btn))
+                        btn = [
+                            [
+                                InlineKeyboardButton(
+                                    "🎥 ಕನ್ನಡ ಹೊಸ ಮೂವೀಗಳು 🎥",
+                                    url="https://t.me/sandalwood_kannada_moviesz",
+                                )
+                            ]
+                        ]
+                        await bot.send_cached_media(
+                            chat_id=user_id,
+                            file_id=db_file_id,
+                            caption=f_caption,
+                            reply_markup=InlineKeyboardMarkup(btn),
+                        )
                     except Exception:
-                        await bot.send_message(chat_id=user_id, text="✅ **Verification complete!**\n\n⚠️ *Please go back to the main group and click the file link again to get your movie!*")
-                else: await bot.send_message(chat_id=user_id, text="✅ **Verification complete!**\n\n⚠️ *Please go back to the main group and click the link again.*")
+                        await bot.send_message(
+                            chat_id=user_id,
+                            text="✅ **Verification complete!**\n\n⚠️ *Please go back to the main group and click the file link again to get your movie!*",
+                        )
+                else:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text="✅ **Verification complete!**\n\n⚠️ *Please go back to the main group and click the link again.*",
+                    )
+
 
 # ============================================================
 # 👑 VIP SYSTEM COMMANDS
 # ============================================================
 @Client.on_message(filters.command("addvip") & admin_filter)
 async def cmd_addvip(bot: Client, message: Message):
-    if message.reply_to_message: user_id = message.reply_to_message.from_user.id
+    if message.reply_to_message:
+        user_id = message.reply_to_message.from_user.id
     elif len(message.command) > 1:
-        try: user_id = int(message.command[1])
-        except ValueError: return await message.reply_text("❌ Invalid User ID.")
-    else: return await message.reply_text("⚠️ **Usage:** `/addvip <user_id>` or reply to a user.")
+        try:
+            user_id = int(message.command[1])
+        except ValueError:
+            return await message.reply_text("❌ Invalid User ID.")
+    else:
+        return await message.reply_text(
+            "⚠️ **Usage:** `/addvip <user_id>` or reply to a user."
+        )
 
     await add_vip(user_id)
-    await message.reply_text(f"👑 **User `{user_id}` added to VIP List!**\nThey will now bypass all Force Subscribe restrictions.")
+    await message.reply_text(
+        f"👑 **User `{user_id}` added to VIP List!**\nThey will now bypass all Force Subscribe restrictions."
+    )
+
 
 @Client.on_message(filters.command("remvip") & admin_filter)
 async def cmd_remvip(bot: Client, message: Message):
-    if message.reply_to_message: user_id = message.reply_to_message.from_user.id
+    if message.reply_to_message:
+        user_id = message.reply_to_message.from_user.id
     elif len(message.command) > 1:
-        try: user_id = int(message.command[1])
-        except ValueError: return await message.reply_text("❌ Invalid User ID.")
-    else: return await message.reply_text("⚠️ **Usage:** `/remvip <user_id>` or reply to a user.")
+        try:
+            user_id = int(message.command[1])
+        except ValueError:
+            return await message.reply_text("❌ Invalid User ID.")
+    else:
+        return await message.reply_text(
+            "⚠️ **Usage:** `/remvip <user_id>` or reply to a user."
+        )
 
     await rem_vip(user_id)
     await message.reply_text(f"🗑️ **User `{user_id}` removed from VIP List!**")
 
+
 @Client.on_message(filters.command("viplist") & admin_filter)
 async def cmd_viplist(bot: Client, message: Message):
     vips = await get_all_vips()
-    if not vips: return await message.reply_text("ℹ️ **VIP List is empty.**")
+    if not vips:
+        return await message.reply_text("ℹ️ **VIP List is empty.**")
     text = "👑 **ForceSub VIP List:**\n\n"
-    for i, vip in enumerate(vips, 1): text += f"{i}. `{vip['user_id']}`\n"
+    for i, vip in enumerate(vips, 1):
+        text += f"{i}. `{vip['user_id']}`\n"
     await message.reply_text(text)
+
 
 # ============================================================
 # ⚙️ CONFIGURATION COMMANDS
@@ -924,49 +1419,86 @@ async def toggle_rotate(bot: Client, message: Message):
     config = await get_fsub_config()
     current = config.get("rotation_enabled", False)
     await update_fsub_config("rotation_enabled", not current)
-    status = "🟢 ENABLED (Smart 1-Hour User Rotation)" if not current else "🔴 DISABLED (Static Priority)"
-    await message.reply_text(f"🔄 **Auto-Rotation Engine:** {status}\n\n*When enabled, the bot automatically cycles through all channels and forces users into the ones they haven't joined yet!*")
+    status = (
+        "🟢 ENABLED (Smart 1-Hour User Rotation)"
+        if not current
+        else "🔴 DISABLED (Static Priority)"
+    )
+    await message.reply_text(
+        f"🔄 **Auto-Rotation Engine:** {status}\n\n*When enabled, the bot automatically cycles through all channels and forces users into the ones they haven't joined yet!*"
+    )
+
 
 @Client.on_message(filters.command("enablefsub") & admin_filter)
 async def enable_fsub(bot: Client, message: Message):
     await update_fsub_config("is_enabled", True)
     await message.reply_text("✅ **Force Subscribe has been ENABLED.**")
 
+
 @Client.on_message(filters.command("disablefsub") & admin_filter)
 async def disable_fsub(bot: Client, message: Message):
     await update_fsub_config("is_enabled", False)
     await message.reply_text("❌ **Force Subscribe has been DISABLED.**")
 
+
 @Client.on_message(filters.command("setfsubcount") & admin_filter)
 async def set_fsub_count(bot: Client, message: Message):
-    if len(message.command) < 2: return await message.reply_text("⚙️ **Usage:** `/setfsubcount [number]`\n*Set to 0 for unlimited active channels.*")
+    if len(message.command) < 2:
+        return await message.reply_text(
+            "⚙️ **Usage:** `/setfsubcount [number]`\n*Set to 0 for unlimited active channels.*"
+        )
     try:
         count = int(message.command[1])
-        if count < 0: raise ValueError
+        if count < 0:
+            raise ValueError
         await update_fsub_config("max_count", count)
-        limit_text = f"maximum `{count}` active channels at once" if count > 0 else "unlimited channels simultaneously"
-        await message.reply_text(f"✅ **FSub Queue Limit Updated!**\nThe system will now force a {limit_text}.")
-    except ValueError: return await message.reply_text("❌ **Invalid number.** Please provide a valid positive integer.")
+        limit_text = (
+            f"maximum `{count}` active channels at once"
+            if count > 0
+            else "unlimited channels simultaneously"
+        )
+        await message.reply_text(
+            f"✅ **FSub Queue Limit Updated!**\nThe system will now force a {limit_text}."
+        )
+    except ValueError:
+        return await message.reply_text(
+            "❌ **Invalid number.** Please provide a valid positive integer."
+        )
+
 
 @Client.on_message(filters.command("setfsub") & admin_filter)
 async def add_dynamic_fsub(bot: Client, message: Message):
-    if len(message.command) < 2: return await message.reply_text("⚙️ **Usage:** `/setfsub [channel_id]`")
+    if len(message.command) < 2:
+        return await message.reply_text("⚙️ **Usage:** `/setfsub [channel_id]`")
     channel_id, uid = message.command[1], get_uid(message)
 
-    try: chat = await bot.get_chat(int(channel_id))
-    except Exception as e: return await message.reply_text(f"❌ **Failed to fetch channel.** Make sure the bot is an admin in `{channel_id}`.\n`Error: {e}`")
+    try:
+        chat = await bot.get_chat(int(channel_id))
+    except Exception as e:
+        return await message.reply_text(
+            f"❌ **Failed to fetch channel.** Make sure the bot is an admin in `{channel_id}`.\n`Error: {e}`"
+        )
 
     try:
-        ask_msg = await message.reply_text(f"🎯 **Target:** `{chat.title}`\n\nDo you want this to be a **Join Request** channel?\n\nReply with `y` for Yes, or `n` for No (Normal invite).")
+        ask_msg = await message.reply_text(
+            f"🎯 **Target:** `{chat.title}`\n\nDo you want this to be a **Join Request** channel?\n\nReply with `y` for Yes, or `n` for No (Normal invite)."
+        )
         resp = await native_listen(bot, message.chat.id, uid, timeout=120)
 
-        try: await ask_msg.delete()
-        except Exception: pass
+        try:
+            await ask_msg.delete()
+        except Exception:
+            pass
         if resp:
-            try: await resp.delete()
-            except Exception: pass
+            try:
+                await resp.delete()
+            except Exception:
+                pass
 
-        if not resp or not resp.text: return await message.reply_text("❌ **Invalid response.** Please send text (y/n).")
+        if not resp or not resp.text:
+            return await message.reply_text(
+                "❌ **Invalid response.** Please send text (y/n)."
+            )
 
         is_req = resp.text.lower() == "y"
         fsub_type = "req" if is_req else "regular"
@@ -974,7 +1506,9 @@ async def add_dynamic_fsub(bot: Client, message: Message):
         config = await get_fsub_config()
         channels, max_count = config.get("channels", {}), config.get("max_count", 0)
 
-        active_count = len([c for c in channels.values() if c.get("status") == "active"])
+        active_count = len(
+            [c for c in channels.values() if c.get("status") == "active"]
+        )
         status = "pending" if max_count > 0 and active_count >= max_count else "active"
 
         invite = await bot.create_chat_invite_link(chat.id, creates_join_request=is_req)
@@ -988,32 +1522,47 @@ async def add_dynamic_fsub(bot: Client, message: Message):
         }
         await update_fsub_channels(channels)
 
-        await message.reply_text(f"✅ **Successfully Configured FSub!**\n\n📢 **Channel:** `{chat.title}`\n🔗 **Link:** {invite.invite_link}\n⚙️ **Type:** `{'Join Request' if is_req else 'Normal'}`\n🟢 **Status:** `{status.upper()}`", disable_web_page_preview=True)
-    except ChatAdminRequired: await message.reply_text("❌ **The bot is not an admin in that channel or lacks 'Invite Users' rights.**")
-    except asyncio.TimeoutError: await message.reply_text("⌛ **Timeout.** Setup cancelled.")
-    except Exception as e: await message.reply_text(f"❌ **Error:** {e}")
+        await message.reply_text(
+            f"✅ **Successfully Configured FSub!**\n\n📢 **Channel:** `{chat.title}`\n🔗 **Link:** {invite.invite_link}\n⚙️ **Type:** `{'Join Request' if is_req else 'Normal'}`\n🟢 **Status:** `{status.upper()}`",
+            disable_web_page_preview=True,
+        )
+    except ChatAdminRequired:
+        await message.reply_text(
+            "❌ **The bot is not an admin in that channel or lacks 'Invite Users' rights.**"
+        )
+    except asyncio.TimeoutError:
+        await message.reply_text("⌛ **Timeout.** Setup cancelled.")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:** {e}")
+
 
 @Client.on_message(filters.command("activatefsub") & admin_filter)
 async def activate_fsub(bot: Client, message: Message):
-    if len(message.command) < 2: return await message.reply_text("⚙️ **Usage:** `/activatefsub [channel_id]`")
+    if len(message.command) < 2:
+        return await message.reply_text("⚙️ **Usage:** `/activatefsub [channel_id]`")
     channel_id = message.command[1]
 
     config = await get_fsub_config()
     channels, max_count = config.get("channels", {}), config.get("max_count", 0)
 
-    if channel_id not in channels: return await message.reply_text("❌ Channel not found in FSub database.")
+    if channel_id not in channels:
+        return await message.reply_text("❌ Channel not found in FSub database.")
 
     active_count = len([c for c in channels.values() if c.get("status") == "active"])
     if max_count > 0 and active_count >= max_count:
-        return await message.reply_text(f"⚠️ **Queue Full!** You already have `{active_count}` active channels (Limit: {max_count}).\nUse `/deactivatefsub` on another channel first.")
+        return await message.reply_text(
+            f"⚠️ **Queue Full!** You already have `{active_count}` active channels (Limit: {max_count}).\nUse `/deactivatefsub` on another channel first."
+        )
 
     channels[channel_id]["status"] = "active"
     await update_fsub_channels(channels)
     await message.reply_text(f"✅ FSub for `{channel_id}` is now **ACTIVE**.")
 
+
 @Client.on_message(filters.command("deactivatefsub") & admin_filter)
 async def deactivate_fsub(bot: Client, message: Message):
-    if len(message.command) < 2: return await message.reply_text("⚙️ **Usage:** `/deactivatefsub [channel_id]`")
+    if len(message.command) < 2:
+        return await message.reply_text("⚙️ **Usage:** `/deactivatefsub [channel_id]`")
     channel_id = message.command[1]
 
     config = await get_fsub_config()
@@ -1022,31 +1571,45 @@ async def deactivate_fsub(bot: Client, message: Message):
     if channel_id in channels:
         channels[channel_id]["status"] = "pending"
         await update_fsub_channels(channels)
-        await message.reply_text(f"⏸ FSub for `{channel_id}` is now **PENDING (Deactivated)**.")
-    else: await message.reply_text("❌ Channel not found in FSub database.")
+        await message.reply_text(
+            f"⏸ FSub for `{channel_id}` is now **PENDING (Deactivated)**."
+        )
+    else:
+        await message.reply_text("❌ Channel not found in FSub database.")
+
 
 @Client.on_message(filters.command("updatefsubtarget") & admin_filter)
 async def update_fsub_target(bot: Client, message: Message):
-    if len(message.command) < 3: return await message.reply_text("⚙️ **Usage:** `/updatefsubtarget [channel_id] [target_link]`\n*Use 'none' to remove custom target.*")
+    if len(message.command) < 3:
+        return await message.reply_text(
+            "⚙️ **Usage:** `/updatefsubtarget [channel_id] [target_link]`\n*Use 'none' to remove custom target.*"
+        )
     channel_id, target = str(message.command[1]), message.command[2]
 
     config = await get_fsub_config()
     channels = config.get("channels", {})
 
-    if channel_id not in channels: return await message.reply_text(f"❌ Channel `{channel_id}` is not configured in FSub.")
+    if channel_id not in channels:
+        return await message.reply_text(
+            f"❌ Channel `{channel_id}` is not configured in FSub."
+        )
 
     if target.lower() == "none":
         channels[channel_id]["target"] = None
-        await message.reply_text("✅ Custom target removed. Bot will use standard invite link.")
+        await message.reply_text(
+            "✅ Custom target removed. Bot will use standard invite link."
+        )
     else:
         channels[channel_id]["target"] = target
         await message.reply_text(f"✅ Target for `{channel_id}` updated to:\n{target}")
 
     await update_fsub_channels(channels)
 
+
 @Client.on_message(filters.command("rmfsub") & admin_filter)
 async def rem_fsub(bot: Client, message: Message):
-    if len(message.command) < 2: return await message.reply_text("⚙️ **Usage:** `/rmfsub [channel_id]`")
+    if len(message.command) < 2:
+        return await message.reply_text("⚙️ **Usage:** `/rmfsub [channel_id]`")
     channel_id = message.command[1]
 
     config = await get_fsub_config()
@@ -1055,20 +1618,29 @@ async def rem_fsub(bot: Client, message: Message):
     if channel_id in channels:
         del channels[channel_id]
         await update_fsub_channels(channels)
-        await message.reply_text(f"🗑️ **ForceSub channel `{channel_id}` removed permanently.**")
-    else: await message.reply_text("❌ Channel not found in FSub database.")
+        await message.reply_text(
+            f"🗑️ **ForceSub channel `{channel_id}` removed permanently.**"
+        )
+    else:
+        await message.reply_text("❌ Channel not found in FSub database.")
+
 
 @Client.on_message(filters.command("rmallfsub") & admin_filter)
 async def rem_all_fsub(bot: Client, message: Message):
     await update_fsub_channels({})
-    await message.reply_text("🗑️ **ALL ForceSub channels have been removed and database is empty.**")
+    await message.reply_text(
+        "🗑️ **ALL ForceSub channels have been removed and database is empty.**"
+    )
+
 
 async def build_fsub_list_text(title_prefix: str, filter_status: str = None) -> str:
     config = await get_fsub_config()
     channels = config.get("channels", {}).items()
-    if filter_status: channels = [(k, v) for k, v in channels if v.get("status") == filter_status]
+    if filter_status:
+        channels = [(k, v) for k, v in channels if v.get("status") == filter_status]
 
-    if not channels: return f"❌ No {title_prefix.lower()} ForceSub channels found."
+    if not channels:
+        return f"❌ No {title_prefix.lower()} ForceSub channels found."
     text = f"📋 **{title_prefix} ForceSub Channels:**\n\n"
     for idx, (cid, data) in enumerate(channels, 1):
         status_emoji = "🟢" if data.get("status") == "active" else "🟡"
@@ -1077,21 +1649,32 @@ async def build_fsub_list_text(title_prefix: str, filter_status: str = None) -> 
         text += f"{idx}. {status_emoji} **{data.get('title', 'Unknown')}**\n├ ID: `{cid}`\n├ Type: `{req_type}`\n└ Link: {active_link}\n\n"
     return text
 
+
 @Client.on_message(filters.command("getallfsub") & admin_filter)
 async def get_all_fsub(bot: Client, message: Message):
     config = await get_fsub_config()
     max_count = config.get("max_count", 0)
     rot_status = "ON" if config.get("rotation_enabled", False) else "OFF"
-    text = f"⚙️ **Queue Limit:** `{max_count if max_count > 0 else 'Unlimited'}`\n🔄 **Auto-Rotation:** `{rot_status}`\n\n" + await build_fsub_list_text("All")
+    text = (
+        f"⚙️ **Queue Limit:** `{max_count if max_count > 0 else 'Unlimited'}`\n🔄 **Auto-Rotation:** `{rot_status}`\n\n"
+        + await build_fsub_list_text("All")
+    )
     await message.reply_text(text, disable_web_page_preview=True)
+
 
 @Client.on_message(filters.command("getactivefsub") & admin_filter)
 async def get_active_fsub(bot: Client, message: Message):
-    await message.reply_text(await build_fsub_list_text("Active", "active"), disable_web_page_preview=True)
+    await message.reply_text(
+        await build_fsub_list_text("Active", "active"), disable_web_page_preview=True
+    )
+
 
 @Client.on_message(filters.command("getpendingfsub") & admin_filter)
 async def get_pending_fsub(bot: Client, message: Message):
-    await message.reply_text(await build_fsub_list_text("Pending", "pending"), disable_web_page_preview=True)
+    await message.reply_text(
+        await build_fsub_list_text("Pending", "pending"), disable_web_page_preview=True
+    )
+
 
 # ============================================================
 # 🎨 FILTER COMMANDS, SEARCH INTERCEPTOR AND AUTO-FILTER HOOK
@@ -1104,37 +1687,74 @@ try:
 except Exception as e:
     logger.error(f"Filters Direct DB fallback init failed: {e}")
 
-async def db_add_filter(grp_id: int, keyword: str, text: str, btn: str, alert: str, fileid: str):
-    try: return await add_filter(grp_id, keyword, text, btn, alert, fileid)
-    except Exception as e: logger.warning(f"Layer 1 add_filter failed, attempting direct DB: {e}")
-    if _filter_col is not None: await _filter_col.update_one({"chat_id": int(grp_id), "keyword": keyword}, {"$set": {"text": text, "btn": btn, "alert": alert, "fileid": fileid}}, upsert=True)
+
+async def db_add_filter(
+    grp_id: int, keyword: str, text: str, btn: str, alert: str, fileid: str
+):
+    try:
+        return await add_filter(grp_id, keyword, text, btn, alert, fileid)
+    except Exception as e:
+        logger.warning(f"Layer 1 add_filter failed, attempting direct DB: {e}")
+    if _filter_col is not None:
+        await _filter_col.update_one(
+            {"chat_id": int(grp_id), "keyword": keyword},
+            {"$set": {"text": text, "btn": btn, "alert": alert, "fileid": fileid}},
+            upsert=True,
+        )
+
 
 async def db_find_filter(grp_id: int, keyword: str):
     try:
         reply_text, btn, alert, fileid = await find_filter(grp_id, keyword)
-        if reply_text or (fileid and fileid != "None"): return reply_text, btn, alert, fileid
-    except Exception as e: logger.warning(f"Layer 1 find_filter failed, attempting direct DB: {e}")
+        if reply_text or (fileid and fileid != "None"):
+            return reply_text, btn, alert, fileid
+    except Exception as e:
+        logger.warning(f"Layer 1 find_filter failed, attempting direct DB: {e}")
     if _filter_col is not None:
         doc = await _filter_col.find_one({"chat_id": int(grp_id), "keyword": keyword})
-        if doc: return doc.get("text", ""), doc.get("btn", "[]"), doc.get("alert", "[]"), doc.get("fileid", "None")
+        if doc:
+            return (
+                doc.get("text", ""),
+                doc.get("btn", "[]"),
+                doc.get("alert", "[]"),
+                doc.get("fileid", "None"),
+            )
     return None, "[]", "[]", "None"
 
+
 async def db_delete_filter(message: Message, keyword: str, grp_id: int):
-    try: await delete_filter(message, keyword, grp_id); return True
-    except Exception as e: logger.warning(f"Layer 1 delete_filter failed, attempting direct DB: {e}")
-    if _filter_col is not None: await _filter_col.delete_one({"chat_id": int(grp_id), "keyword": keyword}); return True
+    try:
+        await delete_filter(message, keyword, grp_id)
+        return True
+    except Exception as e:
+        logger.warning(f"Layer 1 delete_filter failed, attempting direct DB: {e}")
+    if _filter_col is not None:
+        await _filter_col.delete_one({"chat_id": int(grp_id), "keyword": keyword})
+        return True
     return False
+
 
 async def db_get_filters(grp_id: int):
     try:
         res = await get_filters(grp_id)
-        if res is not None: return res
-    except Exception as e: logger.warning(f"Layer 1 get_filters failed, attempting direct DB: {e}")
-    if _filter_col is not None: return [d["keyword"] for d in await _filter_col.find({"chat_id": int(grp_id)}).to_list(length=None) if "keyword" in d]
+        if res is not None:
+            return res
+    except Exception as e:
+        logger.warning(f"Layer 1 get_filters failed, attempting direct DB: {e}")
+    if _filter_col is not None:
+        return [
+            d["keyword"]
+            for d in await _filter_col.find({"chat_id": int(grp_id)}).to_list(
+                length=None
+            )
+            if "keyword" in d
+        ]
     return []
 
+
 def build_keyboard(btn_str: str):
-    if not btn_str or btn_str in ["[]", "None", "False", ""]: return None
+    if not btn_str or btn_str in ["[]", "None", "False", ""]:
+        return None
     try:
         parsed_btn = ast.literal_eval(btn_str)
         button_layout = []
@@ -1144,55 +1764,97 @@ def build_keyboard(btn_str: str):
                 if isinstance(b, dict):
                     b_copy = b.copy()
                     style_val = b_copy.pop("style", None)
-                    final_style = {1: BTN_PRIMARY, 3: BTN_SUCCESS, 4: BTN_DANGER}.get(style_val, style_val)
-                    btn_row.append(create_button(text=b_copy.get("text", "Button"), url=b_copy.get("url"), callback_data=b_copy.get("callback_data"), style=final_style))
-                else: btn_row.append(b)
+                    final_style = {1: BTN_PRIMARY, 3: BTN_SUCCESS, 4: BTN_DANGER}.get(
+                        style_val, style_val
+                    )
+                    btn_row.append(
+                        create_button(
+                            text=b_copy.get("text", "Button"),
+                            url=b_copy.get("url"),
+                            callback_data=b_copy.get("callback_data"),
+                            style=final_style,
+                        )
+                    )
+                else:
+                    btn_row.append(b)
             button_layout.append(btn_row)
         return button_layout
     except Exception as e:
         logger.error(f"Button parsing error: {e}")
         return None
 
+
 def parse_markdown_buttons(text: str):
-    if not text: return "", "[]"
+    if not text:
+        return "", "[]"
     buttons, clean_lines = [], []
     for line in text.split("\n"):
         row_btns = []
-        matches = list(re.finditer(r"\[([^\[\]]+)\]\(([^()]+)\)", line)) + list(re.finditer(r"\[([^\[\]]+)\|([^()]+)\]", line))
+        matches = list(re.finditer(r"\[([^\[\]]+)\]\(([^()]+)\)", line)) + list(
+            re.finditer(r"\[([^\[\]]+)\|([^()]+)\]", line)
+        )
         matches.sort(key=lambda m: m.start())
-        for match in matches: row_btns.append({"text": match.group(1).strip(), "url": match.group(2).strip()})
-        if row_btns: buttons.append(row_btns)
-        clean_line = re.sub(r"\[([^\[\]]+)\|([^()]+)\]", "", re.sub(r"\[([^\[\]]+)\]\(([^()]+)\)", "", line)).strip()
-        if clean_line: clean_lines.append(clean_line)
-        elif not matches: clean_lines.append("")
+        for match in matches:
+            row_btns.append(
+                {"text": match.group(1).strip(), "url": match.group(2).strip()}
+            )
+        if row_btns:
+            buttons.append(row_btns)
+        clean_line = re.sub(
+            r"\[([^\[\]]+)\|([^()]+)\]",
+            "",
+            re.sub(r"\[([^\[\]]+)\]\(([^()]+)\)", "", line),
+        ).strip()
+        if clean_line:
+            clean_lines.append(clean_line)
+        elif not matches:
+            clean_lines.append("")
     return "\n".join(clean_lines).strip(), str(buttons) if buttons else "[]"
 
+
 async def is_admin(client: Client, message: Message, grp_id: int = None) -> bool:
-    if get_uid(message) in get_admin_list(): return True
+    if get_uid(message) in get_admin_list():
+        return True
     target_chat_id = grp_id or message.chat.id
     try:
         member = await client.get_chat_member(target_chat_id, get_uid(message))
-        return member.status in [enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR]
-    except Exception: return False
+        return member.status in [
+            enums.ChatMemberStatus.OWNER,
+            enums.ChatMemberStatus.ADMINISTRATOR,
+        ]
+    except Exception:
+        return False
+
 
 async def get_target_group(client: Client, message: Message):
-    if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]: grp_id = message.chat.id
+    if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+        grp_id = message.chat.id
     else:
         grp_id = await active_connection(str(get_uid(message)))
         if not grp_id:
-            await message.reply_text("⚠️ **You are not connected to any active group!**\n\nUse `/connect <group_id>` to connect to a group first.")
+            await message.reply_text(
+                "⚠️ **You are not connected to any active group!**\n\nUse `/connect <group_id>` to connect to a group first."
+            )
             return None, False
     if not await is_admin(client, message, grp_id=grp_id):
-        await message.reply_text("⚠️ **You must be an admin of the connected group to use this command.**")
+        await message.reply_text(
+            "⚠️ **You must be an admin of the connected group to use this command.**"
+        )
         return None, False
     return grp_id, True
+
 
 @Client.on_message(filters.command("filter") & (filters.group | filters.private))
 async def add_filter_cmd(client: Client, message: Message):
     grp_id, ok = await get_target_group(client, message)
-    if not ok: return
-    if not getattr(message, "reply_to_message", None): return await message.reply_text("⚠️ **Reply to a message to set it as a filter.**")
-    if len(message.command) < 2: return await message.reply_text("⚙️ **Usage:** `/filter <keyword>`")
+    if not ok:
+        return
+    if not getattr(message, "reply_to_message", None):
+        return await message.reply_text(
+            "⚠️ **Reply to a message to set it as a filter.**"
+        )
+    if len(message.command) < 2:
+        return await message.reply_text("⚙️ **Usage:** `/filter <keyword>`")
 
     keyword = message.text.split(None, 1)[1].lower().strip()
     replied = message.reply_to_message
@@ -1206,14 +1868,22 @@ async def add_filter_cmd(client: Client, message: Message):
             break
 
     await db_add_filter(grp_id, keyword, text, btn, "[]", fileid)
-    await message.reply_text(f"✅ **Filter successfully added!**\n\n**Keyword:** `{keyword}`")
+    await message.reply_text(
+        f"✅ **Filter successfully added!**\n\n**Keyword:** `{keyword}`"
+    )
+
 
 @Client.on_message(filters.command("addfilter") & (filters.group | filters.private))
 async def add_premade_filter_cmd(client: Client, message: Message):
     grp_id, ok = await get_target_group(client, message)
-    if not ok: return
-    if not getattr(message, "reply_to_message", None): return await message.reply_text("⚠️ **Reply to a message containing inline buttons.**")
-    if len(message.command) < 2: return await message.reply_text("⚙️ **Usage:** `/addfilter <keyword>`")
+    if not ok:
+        return
+    if not getattr(message, "reply_to_message", None):
+        return await message.reply_text(
+            "⚠️ **Reply to a message containing inline buttons.**"
+        )
+    if len(message.command) < 2:
+        return await message.reply_text("⚙️ **Usage:** `/addfilter <keyword>`")
 
     keyword = message.text.split(None, 1)[1].lower().strip()
     replied = message.reply_to_message
@@ -1223,11 +1893,15 @@ async def add_premade_filter_cmd(client: Client, message: Message):
             row_btns = []
             for btn in row:
                 btn_dict = {"text": btn.text}
-                if btn.url: btn_dict["url"] = btn.url
-                elif btn.callback_data: btn_dict["callback_data"] = btn.callback_data
-                if hasattr(btn, "style") and btn.style: btn_dict["style"] = int(btn.style)
+                if btn.url:
+                    btn_dict["url"] = btn.url
+                elif btn.callback_data:
+                    btn_dict["callback_data"] = btn.callback_data
+                if hasattr(btn, "style") and btn.style:
+                    btn_dict["style"] = int(btn.style)
                 row_btns.append(btn_dict)
-            if row_btns: buttons.append(row_btns)
+            if row_btns:
+                buttons.append(row_btns)
 
     fileid = "None"
     for media_attr in ["photo", "video", "document", "audio", "animation", "sticker"]:
@@ -1236,19 +1910,37 @@ async def add_premade_filter_cmd(client: Client, message: Message):
             fileid = media_obj.file_id
             break
 
-    await db_add_filter(grp_id, keyword, replied.text or replied.caption or "", str(buttons) if buttons else "[]", "[]", fileid)
-    await message.reply_text(f"✅ **Filter with buttons added!**\n\n**Keyword:** `{keyword}`")
+    await db_add_filter(
+        grp_id,
+        keyword,
+        replied.text or replied.caption or "",
+        str(buttons) if buttons else "[]",
+        "[]",
+        fileid,
+    )
+    await message.reply_text(
+        f"✅ **Filter with buttons added!**\n\n**Keyword:** `{keyword}`"
+    )
+
 
 @Client.on_message(filters.command("filterimage") & (filters.group | filters.private))
 async def edit_filter_image_cmd(client: Client, message: Message):
     grp_id, ok = await get_target_group(client, message)
-    if not ok: return
-    if not getattr(message, "reply_to_message", None) or not getattr(message.reply_to_message, "media", None): return await message.reply_text("⚠️ **Reply to a photo, video, or document to set the new image.**")
-    if len(message.command) < 2: return await message.reply_text("⚙️ **Usage:** `/filterimage <keyword>`")
+    if not ok:
+        return
+    if not getattr(message, "reply_to_message", None) or not getattr(
+        message.reply_to_message, "media", None
+    ):
+        return await message.reply_text(
+            "⚠️ **Reply to a photo, video, or document to set the new image.**"
+        )
+    if len(message.command) < 2:
+        return await message.reply_text("⚙️ **Usage:** `/filterimage <keyword>`")
 
     keyword = message.text.split(None, 1)[1].lower().strip()
     reply_text, btn, alert, old_fileid = await db_find_filter(grp_id, keyword)
-    if not reply_text and (not old_fileid or old_fileid == "None"): return await message.reply_text(f"❌ Filter `{keyword}` not found.")
+    if not reply_text and (not old_fileid or old_fileid == "None"):
+        return await message.reply_text(f"❌ Filter `{keyword}` not found.")
 
     fileid = "None"
     for media_attr in ["photo", "video", "document", "audio", "animation", "sticker"]:
@@ -1257,29 +1949,53 @@ async def edit_filter_image_cmd(client: Client, message: Message):
             fileid = media_obj.file_id
             break
 
-    if fileid == "None": return await message.reply_text("❌ Could not extract valid media.")
+    if fileid == "None":
+        return await message.reply_text("❌ Could not extract valid media.")
     await db_add_filter(grp_id, keyword, reply_text, btn, alert, fileid)
-    await message.reply_text(f"✅ **Filter image updated!**\n\n**Keyword:** `{keyword}`")
+    await message.reply_text(
+        f"✅ **Filter image updated!**\n\n**Keyword:** `{keyword}`"
+    )
 
-@Client.on_message(filters.command(["editfiltercolur", "editfiltercolour"]) & (filters.group | filters.private))
+
+@Client.on_message(
+    filters.command(["editfiltercolur", "editfiltercolour"])
+    & (filters.group | filters.private)
+)
 async def edit_filter_colour_cmd(client: Client, message: Message):
     grp_id, ok = await get_target_group(client, message)
-    if not ok: return
+    if not ok:
+        return
     args = message.command
-    if len(args) < 4: return await message.reply_text("❌ **Usage:** `/editfiltercolur <keyword> <button_number> <colour>`\n\n**Colours:** `green`, `red`, `blue`")
+    if len(args) < 4:
+        return await message.reply_text(
+            "❌ **Usage:** `/editfiltercolur <keyword> <button_number> <colour>`\n\n**Colours:** `green`, `red`, `blue`"
+        )
 
-    try: btn_num, color_str, keyword = int(args[-2]), args[-1].lower(), " ".join(args[1:-2]).lower().strip()
-    except ValueError: return await message.reply_text("❌ Button number must be an integer.")
+    try:
+        btn_num, color_str, keyword = (
+            int(args[-2]),
+            args[-1].lower(),
+            " ".join(args[1:-2]).lower().strip(),
+        )
+    except ValueError:
+        return await message.reply_text("❌ Button number must be an integer.")
 
     color_map = {"green": 3, "red": 4, "blue": 1}
-    if color_str not in color_map: return await message.reply_text("❌ Invalid colour. Choose from: `green`, `red`, `blue`.")
+    if color_str not in color_map:
+        return await message.reply_text(
+            "❌ Invalid colour. Choose from: `green`, `red`, `blue`."
+        )
 
     reply_text, btn, alert, fileid = await db_find_filter(grp_id, keyword)
-    if not reply_text and (not fileid or fileid == "None"): return await message.reply_text(f"❌ Filter `{keyword}` not found.")
-    if not btn or btn in ["[]", "None", "False", ""]: return await message.reply_text(f"❌ Filter `{keyword}` has no buttons.")
+    if not reply_text and (not fileid or fileid == "None"):
+        return await message.reply_text(f"❌ Filter `{keyword}` not found.")
+    if not btn or btn in ["[]", "None", "False", ""]:
+        return await message.reply_text(f"❌ Filter `{keyword}` has no buttons.")
 
-    try: button_data = ast.literal_eval(btn)
-    except Exception: return await message.reply_text("❌ Corrupted button format.")
+    try:
+        button_data = ast.literal_eval(btn)
+    except Exception:
+        return await message.reply_text("❌ Corrupted button format.")
 
     count, found = 0, False
     for r_idx, row in enumerate(button_data):
@@ -1289,115 +2005,290 @@ async def edit_filter_colour_cmd(client: Client, message: Message):
                 button_data[r_idx][c_idx]["style"] = color_map[color_str]
                 found = True
                 break
-        if found: break
+        if found:
+            break
 
-    if not found: return await message.reply_text(f"❌ Button {btn_num} not found. Filter has {count} buttons.")
+    if not found:
+        return await message.reply_text(
+            f"❌ Button {btn_num} not found. Filter has {count} buttons."
+        )
     await db_add_filter(grp_id, keyword, reply_text, str(button_data), alert, fileid)
-    await message.reply_text(f"✅ Filter `{keyword}` Button {btn_num} colour changed to {color_str.title()}!")
+    await message.reply_text(
+        f"✅ Filter `{keyword}` Button {btn_num} colour changed to {color_str.title()}!"
+    )
+
 
 @Client.on_message(filters.command("delfilter") & (filters.group | filters.private))
 async def del_filter_cmd(client: Client, message: Message):
     grp_id, ok = await get_target_group(client, message)
-    if not ok: return
-    if len(message.command) < 2: return await message.reply_text("⚙️ **Usage:** `/delfilter <keyword>`")
+    if not ok:
+        return
+    if len(message.command) < 2:
+        return await message.reply_text("⚙️ **Usage:** `/delfilter <keyword>`")
     keyword = message.text.split(None, 1)[1].lower().strip()
     await db_delete_filter(message, keyword, grp_id)
     await message.reply_text(f"🗑️ **Filter `{keyword}` deleted.**")
 
+
 @Client.on_message(filters.command("listfilters") & (filters.group | filters.private))
 async def list_filters_cmd(client: Client, message: Message):
     grp_id, ok = await get_target_group(client, message)
-    if not ok: return
+    if not ok:
+        return
     keywords = await db_get_filters(grp_id)
-    if not keywords: return await message.reply_text("⚠️ **No active filters found.**")
-    await message.reply_text("📋 **Current Filters:**\n\n" + "\n".join([f"• `{kw}`" for kw in keywords]))
+    if not keywords:
+        return await message.reply_text("⚠️ **No active filters found.**")
+    await message.reply_text(
+        "📋 **Current Filters:**\n\n" + "\n".join([f"• `{kw}`" for kw in keywords])
+    )
 
-async def send_filter_media(client: Client, chat_id: int, fileid: str, reply_text: str, reply_markup, reply_id: int):
-    try: return await client.send_cached_media(chat_id, fileid, caption=reply_text, reply_markup=reply_markup, reply_to_message_id=reply_id)
+
+async def send_filter_media(
+    client: Client,
+    chat_id: int,
+    fileid: str,
+    reply_text: str,
+    reply_markup,
+    reply_id: int,
+):
+    try:
+        return await client.send_cached_media(
+            chat_id,
+            fileid,
+            caption=reply_text,
+            reply_markup=reply_markup,
+            reply_to_message_id=reply_id,
+        )
     except FloodWait as e:
         await asyncio.sleep(e.value + 1)
-        return await send_filter_media(client, chat_id, fileid, reply_text, reply_markup, reply_id)
-    except (UserIsBlocked, PeerIdInvalid): return None
-    except Exception: pass
+        return await send_filter_media(
+            client, chat_id, fileid, reply_text, reply_markup, reply_id
+        )
+    except (UserIsBlocked, PeerIdInvalid):
+        return None
+    except Exception:
+        pass
 
-    try: return await client.send_cached_media(chat_id, fileid, caption=reply_text, reply_markup=reply_markup)
-    except Exception: pass
+    try:
+        return await client.send_cached_media(
+            chat_id, fileid, caption=reply_text, reply_markup=reply_markup
+        )
+    except Exception:
+        pass
 
-    for send_fn, arg_name in [(client.send_photo, "photo"), (client.send_video, "video"), (client.send_document, "document"), (client.send_animation, "animation")]:
-        try: return await send_fn(**{"chat_id": chat_id, arg_name: fileid, "caption": reply_text, "reply_markup": reply_markup})
-        except Exception: continue
+    for send_fn, arg_name in [
+        (client.send_photo, "photo"),
+        (client.send_video, "video"),
+        (client.send_document, "document"),
+        (client.send_animation, "animation"),
+    ]:
+        try:
+            return await send_fn(
+                **{
+                    "chat_id": chat_id,
+                    arg_name: fileid,
+                    "caption": reply_text,
+                    "reply_markup": reply_markup,
+                }
+            )
+        except Exception:
+            continue
 
-    try: return await client.send_message(chat_id, text=reply_text or "Here is your file:", reply_markup=reply_markup)
+    try:
+        return await client.send_message(
+            chat_id, text=reply_text or "Here is your file:", reply_markup=reply_markup
+        )
     except Exception as err:
         logger.error(f"Media filter failed all 4 layers: {err}")
         return None
 
-async def safe_send_text_filter(client: Client, chat_id: int, text: str, reply_markup, reply_id: int):
-    try: return await client.send_message(chat_id, text, disable_web_page_preview=True, reply_markup=reply_markup, reply_to_message_id=reply_id)
+
+async def safe_send_text_filter(
+    client: Client, chat_id: int, text: str, reply_markup, reply_id: int
+):
+    try:
+        return await client.send_message(
+            chat_id,
+            text,
+            disable_web_page_preview=True,
+            reply_markup=reply_markup,
+            reply_to_message_id=reply_id,
+        )
     except Exception:
-        try: return await client.send_message(chat_id, text, disable_web_page_preview=True, reply_markup=reply_markup)
+        try:
+            return await client.send_message(
+                chat_id, text, disable_web_page_preview=True, reply_markup=reply_markup
+            )
         except Exception as e:
             logger.error(f"Text filter failed: {e}")
             return None
 
+
 @Client.on_message(filters.group & filters.text & ~filters.bot, group=5)
 async def filter_listener_hook(client: Client, message: Message):
-    if message.text.startswith("/"): return
+    if message.text.startswith("/"):
+        return
     if getattr(info, "REPAIR_MODE", False):
-        if get_uid(message) not in get_admin_list(): return
+        if get_uid(message) not in get_admin_list():
+            return
 
     group_id = message.chat.id
     if message.chat.type == enums.ChatType.PRIVATE:
         active_grp = await active_connection(str(get_uid(message)))
-        if active_grp: group_id = active_grp
+        if active_grp:
+            group_id = active_grp
 
     name = message.text or message.caption or ""
-    reply_id = message.reply_to_message.id if getattr(message, "reply_to_message", None) else message.id
+    reply_id = (
+        message.reply_to_message.id
+        if getattr(message, "reply_to_message", None)
+        else message.id
+    )
     keywords = await db_get_filters(group_id)
-    if not keywords: return
+    if not keywords:
+        return
 
     for keyword in reversed(sorted(keywords, key=len)):
-        if re.search(r"( |^|[^\w])" + re.escape(keyword) + r"( |$|[^\w])", name, flags=re.IGNORECASE):
+        if re.search(
+            r"( |^|[^\w])" + re.escape(keyword) + r"( |$|[^\w])",
+            name,
+            flags=re.IGNORECASE,
+        ):
             reply_text, btn, alert, fileid = await db_find_filter(group_id, keyword)
-            if reply_text: reply_text = reply_text.replace("\\n", "\n").replace("\\t", "\t")
+            if reply_text:
+                reply_text = reply_text.replace("\\n", "\n").replace("\\t", "\t")
             button_layout = build_keyboard(btn)
-            reply_markup = InlineKeyboardMarkup(button_layout) if button_layout else None
+            reply_markup = (
+                InlineKeyboardMarkup(button_layout) if button_layout else None
+            )
             fileid_str = str(fileid).strip()
 
-            sent_msg = await safe_send_text_filter(client, message.chat.id, reply_text or "", reply_markup, reply_id) if not fileid or fileid_str in ["None", "[]", "", "False"] else await send_filter_media(client, message.chat.id, fileid, reply_text or "", reply_markup, reply_id)
+            sent_msg = (
+                await safe_send_text_filter(
+                    client, message.chat.id, reply_text or "", reply_markup, reply_id
+                )
+                if not fileid or fileid_str in ["None", "[]", "", "False"]
+                else await send_filter_media(
+                    client,
+                    message.chat.id,
+                    fileid,
+                    reply_text or "",
+                    reply_markup,
+                    reply_id,
+                )
+            )
 
             if sent_msg:
                 delete_timer = getattr(info, "BUTTON_AUTO_DELETE", 1800)
-                if delete_timer > 0: asyncio.create_task(client.delete_messages(sent_msg.chat.id, sent_msg.id) if delete_timer == 0 else asyncio.sleep(0))
+                if delete_timer > 0:
+                    asyncio.create_task(
+                        client.delete_messages(sent_msg.chat.id, sent_msg.id)
+                        if delete_timer == 0
+                        else asyncio.sleep(0)
+                    )
             return
+
 
 async def inline_users(query: InlineQuery):
     auth_users = getattr(info, "AUTH_USERS", [])
-    if auth_users: return query.from_user and query.from_user.id in auth_users
+    if auth_users:
+        return query.from_user and query.from_user.id in auth_users
     return query.from_user and query.from_user.id not in temp.BANNED_USERS
+
 
 @Client.on_inline_query()
 async def inline_answer(bot, query: InlineQuery):
-    cache_time = 0 if getattr(info, "AUTH_USERS", []) or getattr(info, "AUTH_CHANNEL", None) else getattr(info, "CACHE_TIME", 300)
+    cache_time = (
+        0
+        if getattr(info, "AUTH_USERS", []) or getattr(info, "AUTH_CHANNEL", None)
+        else getattr(info, "CACHE_TIME", 300)
+    )
     if not await inline_users(query):
-        return await query.answer(results=[], cache_time=0, switch_pm_text="okDa", switch_pm_parameter="hehe")
-    if (getattr(info, "AUTH_CHANNEL", None) or getattr(info, "REQ_CHANNEL", None)) and not await is_subscribed(bot, query):
-        return await query.answer(results=[], cache_time=0, switch_pm_text="You have to subscribe my channel to use the bot", switch_pm_parameter="subscribe")
+        return await query.answer(
+            results=[], cache_time=0, switch_pm_text="okDa", switch_pm_parameter="hehe"
+        )
+    if (
+        getattr(info, "AUTH_CHANNEL", None) or getattr(info, "REQ_CHANNEL", None)
+    ) and not await is_subscribed(bot, query):
+        return await query.answer(
+            results=[],
+            cache_time=0,
+            switch_pm_text="You have to subscribe my channel to use the bot",
+            switch_pm_parameter="subscribe",
+        )
 
-    string, file_type = (query.query.split("|", 1)[0].strip(), query.query.split("|", 1)[1].strip().lower()) if "|" in query.query else (query.query.strip(), None)
-    files, next_offset, total = await get_search_results(string, file_type=file_type, max_results=10, offset=int(query.offset or 0))
+    string, file_type = (
+        (
+            query.query.split("|", 1)[0].strip(),
+            query.query.split("|", 1)[1].strip().lower(),
+        )
+        if "|" in query.query
+        else (query.query.strip(), None)
+    )
+    files, next_offset, total = await get_search_results(
+        string, file_type=file_type, max_results=10, offset=int(query.offset or 0)
+    )
 
     results = []
     for file in files:
         f_caption = file.caption
         if getattr(info, "CUSTOM_FILE_CAPTION", None):
-            try: f_caption = info.CUSTOM_FILE_CAPTION.format(file_name="" if file.file_name is None else file.file_name, file_size="" if get_size(file.file_size) is None else get_size(file.file_size), file_caption="" if f_caption is None else f_caption)
-            except Exception: pass
-        results.append(InlineQueryResultCachedDocument(title=file.file_name, document_file_id=file.file_id, caption=f_caption or f"{file.file_name}", description=f"Size: {get_size(file.file_size)}\nType: {file.file_type}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("♻️ 𝗦𝗲𝗮𝗿𝗰𝗵 𝗔𝗴𝗮𝗶𝗻 ♻️", switch_inline_query_current_chat=string)]])))
+            try:
+                f_caption = info.CUSTOM_FILE_CAPTION.format(
+                    file_name="" if file.file_name is None else file.file_name,
+                    file_size=(
+                        ""
+                        if get_size(file.file_size) is None
+                        else get_size(file.file_size)
+                    ),
+                    file_caption="" if f_caption is None else f_caption,
+                )
+            except Exception:
+                pass
+        results.append(
+            InlineQueryResultCachedDocument(
+                title=file.file_name,
+                document_file_id=file.file_id,
+                caption=f_caption or f"{file.file_name}",
+                description=f"Size: {get_size(file.file_size)}\nType: {file.file_type}",
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "♻️ 𝗦𝗲𝗮𝗿𝗰𝗵 𝗔𝗴𝗮𝗶𝗻 ♻️",
+                                switch_inline_query_current_chat=string,
+                            )
+                        ]
+                    ]
+                ),
+            )
+        )
 
     if results:
-        try: await query.answer(results=results, is_personal=True, cache_time=cache_time, switch_pm_text=f"📁 Results - {total} for {string}" if string else f"📁 Results - {total}", switch_pm_parameter="start", next_offset=str(next_offset))
-        except QueryIdInvalid: pass
-        except Exception as e: logger.exception(str(e))
+        try:
+            await query.answer(
+                results=results,
+                is_personal=True,
+                cache_time=cache_time,
+                switch_pm_text=(
+                    f"📁 Results - {total} for {string}"
+                    if string
+                    else f"📁 Results - {total}"
+                ),
+                switch_pm_parameter="start",
+                next_offset=str(next_offset),
+            )
+        except QueryIdInvalid:
+            pass
+        except Exception as e:
+            logger.exception(str(e))
     else:
-        await query.answer(results=[], is_personal=True, cache_time=cache_time, switch_pm_text=f"❌ No results for \"{string}\"" if string else f"❌ No results", switch_pm_parameter="okay")
+        await query.answer(
+            results=[],
+            is_personal=True,
+            cache_time=cache_time,
+            switch_pm_text=(
+                f'❌ No results for "{string}"' if string else f"❌ No results"
+            ),
+            switch_pm_parameter="okay",
+        )
