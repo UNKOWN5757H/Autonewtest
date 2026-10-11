@@ -74,7 +74,7 @@ async def custom_listener(client: Client, message: Message):
         future = _WAITING_REQUESTS.pop(key)
         if not future.done():
             future.set_result(message)
-        # 🚨 BUG FIX: Pyrogram v2 requires raising StopPropagation instead of calling it
+        # 🚨 BUG FIX: Properly raising StopPropagation for Pyrogram v2 so it doesn't block /start
         raise StopPropagation
 
 
