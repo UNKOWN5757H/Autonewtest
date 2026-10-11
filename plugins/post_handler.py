@@ -23,8 +23,8 @@ from pyrogram.types import (
 import info
 from plugins.pm_filter import get_movie_detailsx
 
-# 👑 IMPORTING THE GOD-TIER UNIVERSAL ADMIN ENGINE
-from utils import admin_filter, get_admin_list, get_size, get_uid, temp
+# Import only what we need from utils
+from utils import get_size, temp
 
 logger = getLogger(__name__)
 logger.setLevel(ERROR)
@@ -41,8 +41,36 @@ try:
 except Exception as e:
     logger.error(f"Failed to init DBs: {e}")
 
-_WAITING_REQUESTS = {}
+# ============================================================
+# 👑 NATIVE ADMIN VERIFICATION (Restored for Post Handler)
+# ============================================================
+def get_admin_list():
+    raw_admins = getattr(info, "ADMINS", [])
+    if isinstance(raw_admins, str):
+        return [
+            int(x)
+            for x in raw_admins.replace(",", " ").split()
+            if x.strip().lstrip("-").isdigit()
+        ]
+    elif isinstance(raw_admins, int):
+        return [raw_admins]
+    elif isinstance(raw_admins, list):
+        return [int(x) for x in raw_admins if str(x).strip().lstrip("-").isdigit()]
+    return []
 
+def get_uid(message: Message) -> int:
+    if getattr(message, "from_user", None):
+        return message.from_user.id
+    if getattr(message, "sender_chat", None):
+        return message.sender_chat.id
+    return 0
+
+admin_filter = filters.create(lambda _, __, msg: bool(get_uid(msg) in get_admin_list()))
+
+# ============================================================
+# ⚙️ INTERACTIVE POST LISTENER
+# ============================================================
+_WAITING_REQUESTS = {}
 
 @Client.on_message(admin_filter, group=-90)
 async def custom_listener(client: Client, message: Message):
@@ -51,7 +79,7 @@ async def custom_listener(client: Client, message: Message):
         future = _WAITING_REQUESTS.pop(key)
         if not future.done():
             future.set_result(message)
-        # 🚨 BUG FIX: Properly raising StopPropagation for Pyrogram v2 so it doesn't block /start
+        # 🚨 Pyrogram v2 safe abort
         raise StopPropagation
 
 
@@ -79,60 +107,23 @@ TEMPLATES = {
 }
 
 LANGUAGES = [
-    "Kannada",
-    "English",
-    "Gujarati",
-    "Hindi",
-    "Bengali",
-    "Malayalam",
-    "Marathi",
-    "Punjabi",
-    "Tamil",
-    "Telugu",
-    "Urdu",
+    "Kannada", "English", "Gujarati", "Hindi", "Bengali", "Malayalam",
+    "Marathi", "Punjabi", "Tamil", "Telugu", "Urdu",
 ]
 RESOLUTIONS = [
-    "480p",
-    "720p",
-    "1080p",
-    "1440p",
-    "2160p",
-    "4k",
-    "BluRay",
-    "BDRip",
-    "WEB-DL",
-    "HDRip",
-    "WEBRip",
-    "HDTC",
-    "HEVC",
+    "480p", "720p", "1080p", "1440p", "2160p", "4k", "BluRay",
+    "BDRip", "WEB-DL", "HDRip", "WEBRip", "HDTC", "HEVC",
 ]
 GENRES = [
-    "Action",
-    "Adventure",
-    "Animation",
-    "Comedy",
-    "Crime",
-    "Drama",
-    "Fantasy",
-    "Horror",
-    "Mystery",
-    "Romance",
-    "Sci-Fi",
-    "Thriller",
+    "Action", "Adventure", "Animation", "Comedy", "Crime", "Drama",
+    "Fantasy", "Horror", "Mystery", "Romance", "Sci-Fi", "Thriller",
 ]
 OTT_PLATFORMS = [
-    "Aha",
-    "JioCinema",
-    "SonyLIV",
-    "Voot",
-    "Zee5",
-    "AmazonPrime",
-    "Netflix",
-    "Hulu",
-    "Disney+",
+    "Aha", "JioCinema", "SonyLIV", "Voot", "Zee5", "AmazonPrime",
+    "Netflix", "Hulu", "Disney+",
 ]
 
-# 🚨 BUG FIX: Hardcoded integers to prevent MongoDB ButtonStyle encoding crash
+# 🚨 Hardcoded to prevent MongoDB Pyrogram Enum crashes
 BTN_PRIMARY, BTN_SUCCESS, BTN_DANGER, BTN_SECONDARY = 1, 3, 4, 2
 
 
