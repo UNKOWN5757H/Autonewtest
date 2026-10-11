@@ -30,14 +30,14 @@ from database.connections_mdb import (
     delete_connection,
     if_active,
 )
+from database.ia_filterdb import get_file_details
 from database.join_reqs import join_reqs as _join_reqs_db
 from database.plugin_dbs import plugin_db as _plugin_db
 from database.users_chats_db import db as _db
-from database.ia_filterdb import get_file_details
 from plugins.custom_settings import get_bot_settings
 
 # 👑 IMPORTING THE GOD-TIER UNIVERSAL ADMIN ENGINE & UTILS
-from utils import admin_filter, get_admin_list, get_uid, get_size
+from utils import admin_filter, get_admin_list, get_size, get_uid
 
 logger = getLogger(__name__)
 logger.setLevel(ERROR)
@@ -58,6 +58,7 @@ except Exception as e:
 
 _WAITING_REQUESTS = {}
 
+
 # 🚨 BUG FIX: Added filters.text to prevent media blocking and /start hijacking
 @Client.on_message(filters.text & admin_filter, group=-12)
 async def custom_listener(client: Client, message: Message):
@@ -67,6 +68,7 @@ async def custom_listener(client: Client, message: Message):
         if not future.done():
             future.set_result(message)
         message.stop_propagation()
+
 
 async def native_listen(
     client: Client, chat_id: int, user_id: int, timeout: int = 120
@@ -79,6 +81,7 @@ async def native_listen(
     except asyncio.TimeoutError:
         _WAITING_REQUESTS.pop((chat_id, user_id), None)
         raise asyncio.TimeoutError
+
 
 # ============================================================
 # 🔌 CHAT CONNECTION ENGINE (/connect, /disconnect)
