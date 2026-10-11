@@ -33,10 +33,11 @@ from database.connections_mdb import (
 from database.join_reqs import join_reqs as _join_reqs_db
 from database.plugin_dbs import plugin_db as _plugin_db
 from database.users_chats_db import db as _db
+from database.ia_filterdb import get_file_details
 from plugins.custom_settings import get_bot_settings
 
-# 👑 IMPORTING THE GOD-TIER UNIVERSAL ADMIN ENGINE
-from utils import admin_filter, get_admin_list, get_uid
+# 👑 IMPORTING THE GOD-TIER UNIVERSAL ADMIN ENGINE & UTILS
+from utils import admin_filter, get_admin_list, get_uid, get_size
 
 logger = getLogger(__name__)
 logger.setLevel(ERROR)
@@ -57,8 +58,8 @@ except Exception as e:
 
 _WAITING_REQUESTS = {}
 
-
-@Client.on_message(admin_filter, group=-12)
+# 🚨 BUG FIX: Added filters.text to prevent media blocking and /start hijacking
+@Client.on_message(filters.text & admin_filter, group=-12)
 async def custom_listener(client: Client, message: Message):
     key = (message.chat.id, get_uid(message))
     if key in _WAITING_REQUESTS:
@@ -66,7 +67,6 @@ async def custom_listener(client: Client, message: Message):
         if not future.done():
             future.set_result(message)
         message.stop_propagation()
-
 
 async def native_listen(
     client: Client, chat_id: int, user_id: int, timeout: int = 120
@@ -79,7 +79,6 @@ async def native_listen(
     except asyncio.TimeoutError:
         _WAITING_REQUESTS.pop((chat_id, user_id), None)
         raise asyncio.TimeoutError
-
 
 # ============================================================
 # 🔌 CHAT CONNECTION ENGINE (/connect, /disconnect)
@@ -680,12 +679,19 @@ async def ForceSub(
         custom_fsub_img = b_settings.get("fsub_img", getattr(info, "FSUB_IMG", None))
 
         try:
-            if custom_fsub_img:
-                await message.reply_photo(
-                    photo=custom_fsub_img,
-                    caption="**⚠️ Please join the channels below to get your file!**",
-                    reply_markup=InlineKeyboardMarkup(not_joined_buttons),
-                )
+            if custom_fsub_img and str(custom_fsub_img).strip():
+                try:
+                    await message.reply_photo(
+                        photo=custom_fsub_img,
+                        caption="**⚠️ Please join the channels below to get your file!**",
+                        reply_markup=InlineKeyboardMarkup(not_joined_buttons),
+                    )
+                except Exception:
+                    await message.reply_text(
+                        "**⚠️ Please join the channels below to get your file!**",
+                        reply_markup=InlineKeyboardMarkup(not_joined_buttons),
+                        disable_web_page_preview=True,
+                    )
             else:
                 await message.reply_text(
                     "**⚠️ Please join the channels below to get your file!**",
@@ -699,6 +705,7 @@ async def ForceSub(
         return True
 
 
+# 🚨 BUG FIX: Properly formatting the verified file delivery using get_file_details
 @Client.on_callback_query(filters.regex(r"^refresh_fsub_(.*)"))
 async def refresh_fsub_callback(bot: Client, query: CallbackQuery):
     user_id, file_id = query.from_user.id, query.matches[0].group(1)
@@ -782,21 +789,59 @@ async def refresh_fsub_callback(bot: Client, query: CallbackQuery):
 
         await query.answer("✅ Subscriptions verified!", show_alert=False)
 
-        if file_id and file_id != "0":
-            try:
-                await bot.send_cached_media(
-                    chat_id=user_id,
-                    file_id=file_id,
-                    caption="🎉 **Thank you for joining! Here is your file:**",
-                )
-            except Exception:
+        if file_id and str(file_id) != "0":
+            if file_id.startswith("search_") or file_id.startswith("hdra_"):
+                text = "✅ **Verification complete!**\n\n🔍 Your search is unlocked. Please click the button in the main group again to get your files!"
                 try:
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text="✅ **Verification complete!**\n\n⚠️ *The original file link expired. Please go back to the main group and click the file link again to get your movie!*",
-                    )
+                    await bot.send_message(chat_id=user_id, text=text)
                 except Exception:
                     pass
+            else:
+                files_ = await get_file_details(file_id)
+                if files_:
+                    file = files_[0]
+                    title = file.get("file_name", "Unknown")
+                    size = get_size(file.get("file_size", 0))
+                    f_caption = file.get("caption", "")
+                    db_file_id = file.get("full_file_id", file.get("file_id", file_id))
+
+                    if getattr(info, "CUSTOM_FILE_CAPTION", None):
+                        try:
+                            f_caption = info.CUSTOM_FILE_CAPTION.format(
+                                file_name=title,
+                                file_size=size,
+                                file_caption=f_caption,
+                            )
+                        except Exception:
+                            pass
+                    if not f_caption:
+                        f_caption = f"<b>{title}</b>"
+
+                    try:
+                        btn = [
+                            [
+                                InlineKeyboardButton(
+                                    "🎥 ಕನ್ನಡ ಹೊಸ ಮೂವೀಗಳು 🎥",
+                                    url="https://t.me/sandalwood_kannada_moviesz",
+                                )
+                            ]
+                        ]
+                        await bot.send_cached_media(
+                            chat_id=user_id,
+                            file_id=db_file_id,
+                            caption=f_caption,
+                            reply_markup=InlineKeyboardMarkup(btn),
+                        )
+                    except Exception:
+                        await bot.send_message(
+                            chat_id=user_id,
+                            text="✅ **Verification complete!**\n\n⚠️ *Please go back to the main group and click the file link again to get your movie!*",
+                        )
+                else:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text="✅ **Verification complete!**\n\n⚠️ *Please go back to the main group and click the link again.*",
+                    )
 
 
 # ============================================================
