@@ -101,10 +101,59 @@ TEMPLATES = {
     "divider_list": "🎬 <b>{title} {year}</b>\n━━━━━━━━━━━━━━━━━━\n<blockquote>{LANGUAGES}\n{RESOLUTIONS}\n{OTT_PLATFORMS}</blockquote>",
 }
 
-LANGUAGES = ["Kannada", "English", "Gujarati", "Hindi", "Bengali", "Malayalam", "Marathi", "Punjabi", "Tamil", "Telugu", "Urdu"]
-RESOLUTIONS = ["480p", "720p", "1080p", "1440p", "2160p", "4k", "BluRay", "BDRip", "WEB-DL", "HDRip", "WEBRip", "HDTC", "HEVC"]
-GENRES = ["Action", "Adventure", "Animation", "Comedy", "Crime", "Drama", "Fantasy", "Horror", "Mystery", "Romance", "Sci-Fi", "Thriller"]
-OTT_PLATFORMS = ["Aha", "JioCinema", "SonyLIV", "Voot", "Zee5", "AmazonPrime", "Netflix", "Hulu", "Disney+"]
+LANGUAGES = [
+    "Kannada",
+    "English",
+    "Gujarati",
+    "Hindi",
+    "Bengali",
+    "Malayalam",
+    "Marathi",
+    "Punjabi",
+    "Tamil",
+    "Telugu",
+    "Urdu",
+]
+RESOLUTIONS = [
+    "480p",
+    "720p",
+    "1080p",
+    "1440p",
+    "2160p",
+    "4k",
+    "BluRay",
+    "BDRip",
+    "WEB-DL",
+    "HDRip",
+    "WEBRip",
+    "HDTC",
+    "HEVC",
+]
+GENRES = [
+    "Action",
+    "Adventure",
+    "Animation",
+    "Comedy",
+    "Crime",
+    "Drama",
+    "Fantasy",
+    "Horror",
+    "Mystery",
+    "Romance",
+    "Sci-Fi",
+    "Thriller",
+]
+OTT_PLATFORMS = [
+    "Aha",
+    "JioCinema",
+    "SonyLIV",
+    "Voot",
+    "Zee5",
+    "AmazonPrime",
+    "Netflix",
+    "Hulu",
+    "Disney+",
+]
 
 try:
     from pyrogram.enums import ButtonStyle
@@ -772,29 +821,37 @@ async def extract_and_edit_live_post(client: Client, message: Message, edit_type
         await message.reply("✅ Live channel post updated successfully!")
     except Exception as e:
         await message.reply(f"❌ Error during live edit: {e}")
+
+
 @Client.on_message(filters.command(["editposttitle"]) & admin_filter, group=-4)
 async def live_edit_title(client: Client, message: Message):
     await extract_and_edit_live_post(client, message, "title")
+
 
 @Client.on_message(filters.command(["editpostyear"]) & admin_filter, group=-4)
 async def live_edit_year(client: Client, message: Message):
     await extract_and_edit_live_post(client, message, "year")
 
+
 @Client.on_message(filters.command(["editpostdirect"]) & admin_filter, group=-4)
 async def live_edit_direct(client: Client, message: Message):
     await extract_and_edit_live_post(client, message, "direct")
+
 
 @Client.on_message(filters.command(["editpostbutton"]) & admin_filter, group=-4)
 async def live_edit_button(client: Client, message: Message):
     await extract_and_edit_live_post(client, message, "button")
 
+
 @Client.on_message(filters.command(["editpostbuttoncolour"]) & admin_filter, group=-4)
 async def live_edit_btn_color(client: Client, message: Message):
     await extract_and_edit_live_post(client, message, "buttoncolour")
 
+
 @Client.on_message(filters.command(["editpostimage"]) & admin_filter, group=-4)
 async def live_edit_image(client: Client, message: Message):
     await extract_and_edit_live_post(client, message, "image")
+
 
 @Client.on_message(filters.command(["editpostnormalimage"]) & admin_filter, group=-4)
 async def live_edit_nimg(client: Client, message: Message):
