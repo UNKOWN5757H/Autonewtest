@@ -1673,6 +1673,7 @@ async def get_pending_fsub(bot: Client, message: Message):
 # 🎨 FILTER COMMANDS, SEARCH INTERCEPTOR AND AUTO-FILTER HOOK
 # ============================================================
 
+
 async def db_add_filter(
     grp_id: int, keyword: str, text: str, btn: str, alert: str, fileid: str
 ):
@@ -1757,7 +1758,7 @@ def build_keyboard(btn_str: str):
                             text=b_copy.get("text", "Button"),
                             url=b_copy.get("url"),
                             callback_data=b_copy.get("callback_data"),
-                            **({"style": final_style} if final_style else {})
+                            **({"style": final_style} if final_style else {}),
                         )
                     )
                 else:
