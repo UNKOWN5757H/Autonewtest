@@ -58,6 +58,8 @@ except Exception:
 try:
     from plugins.uibuttons import (
         get_default_file_keyboard as _get_default_file_keyboard,
+    )
+    from plugins.uibuttons import (
         get_deleted_file_notify_keyboard as _get_deleted_file_notify_keyboard,
     )
 except Exception:
