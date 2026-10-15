@@ -698,7 +698,9 @@ async def backup_panel_callbacks(bot: Client, query: CallbackQuery):
                 scheduler_running = False
                 if _scheduler_task and not _scheduler_task.done():
                     _scheduler_task.cancel()
-                await safe_answer(query, "🛑 24h Auto-Backup Disabled!", show_alert=True)
+                await safe_answer(
+                    query, "🛑 24h Auto-Backup Disabled!", show_alert=True
+                )
             else:
                 _scheduler_task = asyncio.create_task(auto_backup_task(bot))
                 await safe_answer(query, "✅ 24h Auto-Backup Enabled!", show_alert=True)
