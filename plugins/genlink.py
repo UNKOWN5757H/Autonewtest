@@ -45,6 +45,8 @@ except ImportError:
 try:
     from plugins.uibuttons import (
         get_default_file_keyboard as _get_default_file_keyboard,
+    )
+    from plugins.uibuttons import (
         get_deleted_file_notify_keyboard as _get_deleted_file_notify_keyboard,
     )
 except Exception:
@@ -1104,9 +1106,7 @@ async def gen_link_batch(bot: Client, message: Message):
 # ============================================================
 # 🎛️ CANCEL & ABORT CALLBACKS
 # ============================================================
-@Client.on_callback_query(
-    filters.regex(r"^(genlink_cancel#|genlink_abort#)"), group=-3
-)
+@Client.on_callback_query(filters.regex(r"^(genlink_cancel#|genlink_abort#)"), group=-3)
 async def genlink_callbacks(bot: Client, query: CallbackQuery):
     if not await is_cb_admin(bot, query):
         return await safe_answer(query, "❌ Unauthorized: Admin only.", show_alert=True)
