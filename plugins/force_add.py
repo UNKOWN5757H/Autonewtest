@@ -230,7 +230,9 @@ async def get_fa_config(chat_id: int, force_refresh: bool = False) -> Dict[str, 
     if doc or sync_doc:
         base = doc or sync_doc or {}
         limit_val = int(base.get("limit", 0))
-        saved_limit = int(base.get("saved_limit") or (limit_val if limit_val > 0 else 5))
+        saved_limit = int(
+            base.get("saved_limit") or (limit_val if limit_val > 0 else 5)
+        )
         mode_val = str(base.get("mode", "all"))
 
         # Check if toggled on/off via uibuttons.py
@@ -547,9 +549,7 @@ async def set_force_add(bot: Client, message: Message):
     )
 
 
-@Client.on_callback_query(
-    filters.regex(r"^fa_set_(\d+)_([a-z]+)_(-?\d+)$"), group=-2
-)
+@Client.on_callback_query(filters.regex(r"^fa_set_(\d+)_([a-z]+)_(-?\d+)$"), group=-2)
 async def set_forceadd_callback(bot: Client, query: CallbackQuery):
     limit = int(query.matches[0].group(1))
     mode = query.matches[0].group(2)
@@ -769,9 +769,7 @@ async def reset_all_adds(bot: Client, message: Message):
         )
 
     if fa_users_db is not None:
-        await fa_users_db.update_many(
-            {"chat_id": int(grp_id)}, {"$set": {"adds": []}}
-        )
+        await fa_users_db.update_many({"chat_id": int(grp_id)}, {"$set": {"adds": []}})
         await safe_reply_text(
             message,
             f"💥 <b>TOTAL RESET for <code>{grp_id}</code>!</b> All members' scores are now 0. Everyone must add members again.",
