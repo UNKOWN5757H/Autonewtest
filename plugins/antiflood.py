@@ -1,18 +1,22 @@
 import asyncio
+import html
 import inspect
 import time
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
 from logging import ERROR, getLogger
+from typing import Any, Dict, List, Optional, Tuple
 
+from motor.motor_asyncio import AsyncIOMotorClient
 from pyrogram import Client, StopPropagation, enums, filters
 from pyrogram.errors import (
     ChatAdminRequired,
+    ChatWriteForbidden,
     FloodWait,
-    MessageDeleteForbidden,
+    Forbidden,
+    MessageIdInvalid,
     MessageNotModified,
+    PeerIdInvalid,
     QueryIdInvalid,
-    UserAdminInvalid,
+    UserIsBlocked,
 )
 from pyrogram.types import (
     CallbackQuery,
@@ -28,26 +32,178 @@ logger = getLogger(__name__)
 logger.setLevel(ERROR)
 
 # ============================================================
-# ⚙️ FLOOD THRESHOLDS & STATE TRACKERS
+# 🛡️ PYROGRAM v2.2.26 (LAYER 230) COMPATIBILITY ENGINE
 # ============================================================
-FLOOD_ENABLED = True
-FLOOD_WINDOW_SECONDS = 3
-MAX_MESSAGES_PER_WINDOW = 5
-MUTE_DURATION_SECONDS = 600  # 10 minutes
+try:
+    from pyrogram.types import LinkPreviewOptions
+except ImportError:
+    LinkPreviewOptions = None
 
-# Keyed by (chat_id, user_id) so mutes & flood windows are isolated per chat
-USER_MESSAGE_LOG = defaultdict(list)
-MUTED_USERS = {}  # {(chat_id, user_id): expiry_timestamp}
-MUTED_PROCESSING_LOCK = set()
+try:
+    from pyrogram.types import ReplyParameters
+except ImportError:
+    ReplyParameters = None
 
-# Deduplicate media albums so sending 1 album of 6-10 photos counts as 1 message
-SEEN_MEDIA_GROUPS = {}  # {media_group_id: timestamp}
+_REPLY_PARAMS = set(inspect.signature(Message.reply_text).parameters.keys())
+_EDIT_PARAMS = set(inspect.signature(Message.edit_text).parameters.keys())
 
-# Cache for group admin checks to avoid spamming get_chat_member
-ADMIN_CACHE = {}  # {(chat_id, user_id): (expiry_timestamp, is_admin)}
+
+def _prepare_compat_kwargs(
+    kwargs: dict, supported_params: set, disable_preview: Optional[bool] = None
+) -> dict:
+    clean_kw = dict(kwargs)
+    explicit_disable = clean_kw.pop("disable_web_page_preview", disable_preview)
+
+    if explicit_disable is not None:
+        if "disable_web_page_preview" in supported_params:
+            clean_kw["disable_web_page_preview"] = bool(explicit_disable)
+        elif (
+            "link_preview_options" in supported_params
+            and LinkPreviewOptions is not None
+        ):
+            try:
+                clean_kw["link_preview_options"] = LinkPreviewOptions(
+                    is_disabled=bool(explicit_disable)
+                )
+            except Exception:
+                pass
+
+    if "reply_to_message_id" in clean_kw:
+        rep_id = clean_kw.pop("reply_to_message_id")
+        if rep_id:
+            if "reply_to_message_id" in supported_params:
+                clean_kw["reply_to_message_id"] = rep_id
+            elif "reply_parameters" in supported_params and ReplyParameters is not None:
+                try:
+                    clean_kw["reply_parameters"] = ReplyParameters(message_id=rep_id)
+                except Exception:
+                    pass
+
+    return clean_kw
+
+
+async def safe_reply_text(
+    message: Message, text: str, disable_web_page_preview: bool = True, **kwargs
+) -> Optional[Message]:
+    compat_kw = _prepare_compat_kwargs(
+        kwargs, _REPLY_PARAMS, disable_preview=disable_web_page_preview
+    )
+    try:
+        return await message.reply_text(text, **compat_kw)
+    except TypeError:
+        compat_kw.pop("disable_web_page_preview", None)
+        compat_kw.pop("link_preview_options", None)
+        compat_kw.pop("reply_parameters", None)
+        compat_kw.pop("reply_to_message_id", None)
+        return await message.reply_text(text, **compat_kw)
+    except (ChatWriteForbidden, Forbidden, UserIsBlocked, PeerIdInvalid):
+        return None
+
+
+async def safe_edit_text(
+    message: Message, text: str, disable_web_page_preview: bool = True, **kwargs
+) -> Optional[Message]:
+    compat_kw = _prepare_compat_kwargs(
+        kwargs, _EDIT_PARAMS, disable_preview=disable_web_page_preview
+    )
+    try:
+        return await message.edit_text(text, **compat_kw)
+    except TypeError:
+        compat_kw.pop("disable_web_page_preview", None)
+        compat_kw.pop("link_preview_options", None)
+        return await message.edit_text(text, **compat_kw)
+    except (MessageNotModified, MessageIdInvalid, ChatWriteForbidden, Forbidden):
+        return None
+
+
+async def safe_answer(
+    query: CallbackQuery, text: Optional[str] = None, show_alert: bool = False
+):
+    if not query:
+        return
+    try:
+        if text is not None:
+            await query.answer(str(text)[:200], show_alert=show_alert)
+        else:
+            await query.answer(show_alert=show_alert)
+    except (QueryIdInvalid, Exception):
+        pass
+
 
 # ============================================================
-# 🛡️ SAFE CHAT PERMISSIONS BUILDER (CROSS-VERSION COMPATIBLE)
+# ⚙️ MONGODB STORAGE & IN-MEMORY CACHE FOR ANTI-FLOOD
+# ============================================================
+_flood_db = None
+_active_db = None
+_std_conn_db = None
+
+try:
+    _DB_CLIENT = AsyncIOMotorClient(info.DATABASE_URI)
+    _BOT_DB = _DB_CLIENT[info.DATABASE_NAME]
+    _flood_db = _BOT_DB["antiflood_settings"]
+    _active_db = _BOT_DB["active_connections"]
+    _std_conn_db = _BOT_DB["CONNECTION"]
+except Exception as e:
+    logger.error(f"Failed to init antiflood DB: {e}")
+
+# 60-second config cache: {chat_id: (timestamp, config_dict)}
+_FLOOD_CONFIG_CACHE: Dict[int, Tuple[float, Dict[str, Any]]] = {}
+
+# Live message tracker: {(chat_id, user_id): [msg_timestamps]}
+_USER_MSG_TRACKER: Dict[Tuple[int, int], List[float]] = {}
+_WARN_COOLDOWN: Dict[Tuple[int, int], float] = {}
+
+
+async def get_flood_config(
+    chat_id: int, force_refresh: bool = False
+) -> Dict[str, Any]:
+    cid = int(chat_id)
+    now = time.time()
+    if not force_refresh and cid in _FLOOD_CONFIG_CACHE:
+        ts, cached = _FLOOD_CONFIG_CACHE[cid]
+        if now - ts < 60:
+            return cached
+
+    default_cfg = {
+        "chat_id": cid,
+        "enabled": True,
+        "limit": int(getattr(info, "FLOOD_LIMIT", 5)),
+        "window": int(getattr(info, "FLOOD_TIME", 5)),
+        "action": str(getattr(info, "FLOOD_ACTION", "delete")),  # delete | mute | kick
+        "mute_duration": 300,
+    }
+    if _flood_db is not None:
+        try:
+            doc = await _flood_db.find_one({"chat_id": cid})
+            if doc:
+                for k, v in default_cfg.items():
+                    if k not in doc:
+                        doc[k] = v
+                _FLOOD_CONFIG_CACHE[cid] = (now, doc)
+                return doc
+        except Exception:
+            pass
+
+    _FLOOD_CONFIG_CACHE[cid] = (now, default_cfg)
+    return default_cfg
+
+
+async def update_flood_config(chat_id: int, updates: Dict[str, Any]):
+    cid = int(chat_id)
+    cur = await get_flood_config(cid, force_refresh=True)
+    cur.update(updates)
+    if _flood_db is not None:
+        try:
+            await _flood_db.update_one(
+                {"chat_id": cid}, {"$set": updates}, upsert=True
+            )
+        except Exception as e:
+            logger.error(f"update_flood_config error: {e}")
+    _FLOOD_CONFIG_CACHE[cid] = (time.time(), cur)
+
+
+# ============================================================
+# 🛡️ SAFE CHAT PERMISSIONS BUILDER
 # ============================================================
 _VALID_PERM_PARAMS = set(
     inspect.signature(ChatPermissions.__init__).parameters.keys()
@@ -73,39 +229,30 @@ def build_chat_permissions(can_send: bool) -> ChatPermissions:
     return ChatPermissions(**valid_kwargs)
 
 
-async def restrict_or_unrestrict_member(
-    client: Client, chat_id: int, user_id: int, can_send: bool, duration_sec: int = 0
-):
-    """Cross-version wrapper for restrict_chat_member that handles datetime vs int until_date."""
-    perms = build_chat_permissions(can_send=can_send)
-    if not can_send and duration_sec > 0:
-        until_dt = datetime.now(timezone.utc) + timedelta(seconds=duration_sec)
-        try:
-            await client.restrict_chat_member(
-                chat_id=chat_id,
-                user_id=user_id,
-                permissions=perms,
-                until_date=until_dt,
-            )
-        except TypeError:
-            await client.restrict_chat_member(
-                chat_id=chat_id,
-                user_id=user_id,
-                permissions=perms,
-                until_date=int(time.time() + duration_sec),
-            )
-    else:
+async def _unmute_later(client: Client, chat_id: int, user_id: int, delay: int):
+    await asyncio.sleep(delay)
+    try:
         await client.restrict_chat_member(
             chat_id=chat_id,
             user_id=user_id,
-            permissions=perms,
+            permissions=build_chat_permissions(can_send=True),
         )
+    except Exception:
+        pass
+
+
+async def _delete_later(msg: Message, delay: int = 8):
+    await asyncio.sleep(delay)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
 
 
 # ============================================================
-# 👑 FULL POWER ADMIN CHECKER (GLOBAL + CHAT + ANONYMOUS)
+# 👑 SMART AUTHORIZATION & CONNECTED GROUP ROUTING
 # ============================================================
-def get_admin_list():
+def get_admin_list() -> List[int]:
     raw_admins = getattr(info, "ADMINS", [])
     if isinstance(raw_admins, (str, int)):
         raw_admins = str(raw_admins).replace(",", " ").split()
@@ -116,407 +263,402 @@ def get_admin_list():
     return [int(x) for x in raw_admins if str(x).strip().lstrip("-").isdigit()]
 
 
-async def is_user_admin(client: Client, message: Message) -> bool:
+async def get_active_connected_group(user_id: int) -> Optional[int]:
+    uid_str = str(user_id)
+    try:
+        from plugins.pm_filter import get_active_connection
+
+        conn = await get_active_connection(uid_str)
+        if conn:
+            return int(conn)
+    except Exception:
+        pass
+
+    if _active_db is not None:
+        try:
+            doc = await _active_db.find_one({"user_id": uid_str})
+            if doc and doc.get("group_id"):
+                return int(doc["group_id"])
+        except Exception:
+            pass
+
+    if _std_conn_db is not None:
+        try:
+            doc = await _std_conn_db.find_one({"_id": uid_str})
+            if doc and doc.get("active_group"):
+                return int(doc["active_group"])
+        except Exception:
+            pass
+    return None
+
+
+async def resolve_target_group(message: Message) -> Optional[int]:
+    if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+        return int(message.chat.id)
+    if message.from_user:
+        return await get_active_connected_group(message.from_user.id)
+    return None
+
+
+async def is_user_admin(
+    client: Client, message: Message, target_chat_id: Optional[int] = None
+) -> bool:
     if not message:
         return False
     admin_list = get_admin_list()
 
-    # 1. Global Admin Check (Direct User)
     if message.from_user and message.from_user.id in admin_list:
         return True
-
-    # 2. Global Admin Check (Anonymous/Channel sending as Chat)
     if message.sender_chat and message.sender_chat.id in admin_list:
         return True
 
-    # 3. Linked Channel Auto-Forward Check
-    if getattr(message, "automatic_forward", False):
-        return True
+    check_cid = target_chat_id or (
+        message.chat.id
+        if message.chat
+        and message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]
+        else None
+    )
 
-    # 4. Group Admin Check (Normal & Anonymous Admins)
-    if message.chat and message.chat.type in [
-        enums.ChatType.GROUP,
-        enums.ChatType.SUPERGROUP,
-    ]:
-        if message.sender_chat and message.sender_chat.id == message.chat.id:
+    if check_cid:
+        if message.sender_chat and message.sender_chat.id == check_cid:
             return True
-
         if message.from_user:
-            chat_id = message.chat.id
-            user_id = message.from_user.id
-            cache_key = (chat_id, user_id)
-            now = time.time()
-
-            cached = ADMIN_CACHE.get(cache_key)
-            if cached and cached[0] > now:
-                return cached[1]
-
             try:
-                member = await client.get_chat_member(chat_id, user_id)
-                is_admin = member.status in [
+                member = await client.get_chat_member(
+                    int(check_cid), message.from_user.id
+                )
+                return member.status in [
                     enums.ChatMemberStatus.ADMINISTRATOR,
                     enums.ChatMemberStatus.OWNER,
                 ]
-                ADMIN_CACHE[cache_key] = (now + 300, is_admin)
-                return is_admin
             except Exception:
-                return False
-
+                pass
     return False
 
 
-async def is_callback_user_admin(
-    client: Client, query: CallbackQuery, target_chat_id: int = None
+async def is_cb_admin(
+    client: Client, query: CallbackQuery, chat_id: int
 ) -> bool:
     if not query or not query.from_user:
         return False
-    user_id = query.from_user.id
-    if user_id in get_admin_list():
+    uid = query.from_user.id
+    if uid in get_admin_list():
         return True
-
-    chat_id = target_chat_id or (query.message.chat.id if query.message else None)
-    if chat_id and int(chat_id) < 0:
-        cache_key = (int(chat_id), user_id)
-        now = time.time()
-        cached = ADMIN_CACHE.get(cache_key)
-        if cached and cached[0] > now:
-            return cached[1]
-        try:
-            member = await client.get_chat_member(int(chat_id), user_id)
-            is_admin = member.status in [
-                enums.ChatMemberStatus.ADMINISTRATOR,
-                enums.ChatMemberStatus.OWNER,
-            ]
-            ADMIN_CACHE[cache_key] = (now + 300, is_admin)
-            return is_admin
-        except Exception:
-            pass
-    return False
-
-
-async def _admin_filter_func(_, client: Client, message: Message) -> bool:
-    return await is_user_admin(client, message)
-
-
-admin_filter = filters.create(_admin_filter_func)
-
-
-# ============================================================
-# 🧹 RAM GARBAGE COLLECTOR (PREVENTS LEAKS)
-# ============================================================
-async def memory_cleanup_worker():
-    while True:
-        await asyncio.sleep(300)
-        now = time.time()
-
-        expired_mutes = [k for k, expiry in MUTED_USERS.items() if expiry <= now]
-        for k in expired_mutes:
-            MUTED_USERS.pop(k, None)
-
-        inactive_keys = [
-            k
-            for k, timestamps in USER_MESSAGE_LOG.items()
-            if not timestamps or (now - timestamps[-1]) > 60
+    try:
+        member = await client.get_chat_member(int(chat_id), uid)
+        return member.status in [
+            enums.ChatMemberStatus.ADMINISTRATOR,
+            enums.ChatMemberStatus.OWNER,
         ]
-        for k in inactive_keys:
-            USER_MESSAGE_LOG.pop(k, None)
-
-        expired_admin_checks = [k for k, (exp, _) in ADMIN_CACHE.items() if exp <= now]
-        for k in expired_admin_checks:
-            ADMIN_CACHE.pop(k, None)
-
-        expired_albums = [
-            mgid for mgid, ts in SEEN_MEDIA_GROUPS.items() if (now - ts) > 30
-        ]
-        for mgid in expired_albums:
-            SEEN_MEDIA_GROUPS.pop(mgid, None)
-
-
-_GC_STARTED = False
-
-
-@Client.on_message(filters.all, group=-150)
-async def init_antiflood_gc(client: Client, message: Message):
-    global _GC_STARTED
-    if not _GC_STARTED:
-        _GC_STARTED = True
-        asyncio.create_task(memory_cleanup_worker())
+    except Exception:
+        return False
 
 
 # ============================================================
-# 🎛️ ADMIN COMMANDS & INTERACTIVE BUTTONS
+# 🎛️ ANTI-FLOOD CONFIGURATION COMMANDS & DASHBOARD
 # ============================================================
-def _build_flood_panel() -> tuple[str, InlineKeyboardMarkup]:
-    status_str = "✅ ENABLED" if FLOOD_ENABLED else "🚫 DISABLED"
-    active_mutes = sum(1 for exp in MUTED_USERS.values() if exp > time.time())
+async def _build_flood_panel(chat_id: int) -> Tuple[str, InlineKeyboardMarkup]:
+    cfg = await get_flood_config(chat_id, force_refresh=True)
+    is_en = bool(cfg.get("enabled", True))
+    limit = int(cfg.get("limit", 5))
+    window = int(cfg.get("window", 5))
+    action = str(cfg.get("action", "delete")).upper()
+
     text = (
-        f"🛡️ <b>Anti-Flood Shield Dashboard</b>\n\n"
-        f"• <b>Status:</b> <code>{status_str}</code>\n"
-        f"• <b>Max Messages:</b> <code>{MAX_MESSAGES_PER_WINDOW} msgs / {FLOOD_WINDOW_SECONDS}s</code>\n"
-        f"• <b>Mute Duration:</b> <code>{MUTE_DURATION_SECONDS // 60} minutes</code>\n"
-        f"• <b>Currently Muted Users:</b> <code>{active_mutes}</code>"
+        f"🛡️ <b>Anti-Flood Protection Settings</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 <b>Group ID:</b> <code>{chat_id}</code>\n"
+        f"📡 <b>Status:</b> <code>{'🟢 ENABLED' if is_en else '🔴 DISABLED'}</code>\n"
+        f"⚡ <b>Trigger Limit:</b> <code>{limit} messages</code> in <code>{window}s</code>\n"
+        f"🔨 <b>Penalty Action:</b> <code>{action}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>Commands:</b>\n"
+        f"• <code>/setflood &lt;messages&gt; [seconds]</code>\n"
+        f"• <code>/floodmode &lt;delete|mute|kick&gt;</code>"
     )
-    toggle_label = "🚫 Disable Shield" if FLOOD_ENABLED else "✅ Enable Shield"
+
+    toggle_lbl = "🔴 Disable Anti-Flood" if is_en else "🟢 Enable Anti-Flood"
     buttons = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton(toggle_label, callback_data="af_toggle"),
-                InlineKeyboardButton("🧹 Clear Mutes", callback_data="af_clear_mutes"),
+                InlineKeyboardButton(
+                    toggle_lbl, callback_data=f"af_ctl:toggle:{chat_id}"
+                )
             ],
             [
-                InlineKeyboardButton("🔄 Refresh", callback_data="af_refresh"),
-                InlineKeyboardButton("🔐 Close", callback_data="af_close"),
+                InlineKeyboardButton(
+                    f"{'✅ ' if action == 'DELETE' else ''}🗑️ Delete",
+                    callback_data=f"af_ctl:mode:delete:{chat_id}",
+                ),
+                InlineKeyboardButton(
+                    f"{'✅ ' if action == 'MUTE' else ''}🔇 Mute 5m",
+                    callback_data=f"af_ctl:mode:mute:{chat_id}",
+                ),
+                InlineKeyboardButton(
+                    f"{'✅ ' if action == 'KICK' else ''}👢 Kick",
+                    callback_data=f"af_ctl:mode:kick:{chat_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton("🔐 Close", callback_data=f"af_ctl:close:{chat_id}")
             ],
         ]
     )
     return text, buttons
 
 
-@Client.on_message(filters.command(["antiflood", "floodstatus"]) & admin_filter)
-async def antiflood_dashboard_cmd(client: Client, message: Message):
-    text, markup = _build_flood_panel()
-    await message.reply_text(text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
-
-
-@Client.on_message(filters.command(["unflood", "unmute"]) & admin_filter)
-async def unflood_user_cmd(client: Client, message: Message):
-    target_uid = None
-    if message.reply_to_message and message.reply_to_message.from_user:
-        target_uid = message.reply_to_message.from_user.id
-    elif len(message.command) > 1 and message.command[1].lstrip("-").isdigit():
-        target_uid = int(message.command[1])
-
-    if not target_uid:
-        return await message.reply_text(
-            "⚙️ <b>Usage:</b> Reply to a muted user with <code>/unflood</code> or send <code>/unflood &lt;user_id&gt;</code>",
+@Client.on_message(
+    filters.command(["antiflood", "flood"]) & filters.incoming, group=-2
+)
+async def antiflood_panel_cmd(client: Client, message: Message):
+    grp_id = await resolve_target_group(message)
+    if not grp_id:
+        return await safe_reply_text(
+            message,
+            "⚠️ <b>No active group connected!</b>\nUse <code>/connect &lt;group_id&gt;</code> in PM or run this command inside your group.",
             parse_mode=enums.ParseMode.HTML,
         )
 
-    # Remove from all in-memory flood & mute records
-    keys_to_remove = [k for k in MUTED_USERS if k[1] == target_uid]
-    for k in keys_to_remove:
-        MUTED_USERS.pop(k, None)
-    log_keys = [k for k in USER_MESSAGE_LOG if k[1] == target_uid]
-    for k in log_keys:
-        USER_MESSAGE_LOG.pop(k, None)
+    if not await is_user_admin(client, message, target_chat_id=grp_id):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Group Admin access required.",
+            parse_mode=enums.ParseMode.HTML,
+        )
 
-    if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        try:
-            await restrict_or_unrestrict_member(
-                client, message.chat.id, target_uid, can_send=True
-            )
-        except Exception:
-            pass
+    if len(message.command) > 1:
+        arg = message.command[1].strip().lower()
+        if arg in ["on", "enable", "true", "yes"]:
+            await update_flood_config(grp_id, {"enabled": True})
+        elif arg in ["off", "disable", "false", "no"]:
+            await update_flood_config(grp_id, {"enabled": False})
 
-    await message.reply_text(
-        f"🔓 <b>User <code>{target_uid}</code> has been unmuted and cleared from the Anti-Flood filter!</b>",
-        parse_mode=enums.ParseMode.HTML,
+    text, markup = await _build_flood_panel(grp_id)
+    await safe_reply_text(
+        message, text, reply_markup=markup, parse_mode=enums.ParseMode.HTML
     )
 
 
-@Client.on_callback_query(
-    filters.regex(r"^af_(toggle|clear_mutes|refresh|close|unmute:(-?\d+):(\d+))$")
-)
-async def antiflood_callbacks(client: Client, query: CallbackQuery):
-    global FLOOD_ENABLED
-    data = query.data
+@Client.on_message(filters.command("setflood") & filters.incoming, group=-2)
+async def set_flood_limit_cmd(client: Client, message: Message):
+    grp_id = await resolve_target_group(message)
+    if not grp_id:
+        return await safe_reply_text(
+            message,
+            "⚠️ <b>No active group connected!</b>\nUse <code>/connect &lt;group_id&gt;</code> first.",
+            parse_mode=enums.ParseMode.HTML,
+        )
 
-    if data.startswith("af_unmute:"):
-        _, raw_cid, raw_uid = data.split(":")
-        chat_id, target_uid = int(raw_cid), int(raw_uid)
+    if not await is_user_admin(client, message, target_chat_id=grp_id):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Admin access required.",
+            parse_mode=enums.ParseMode.HTML,
+        )
 
-        if not await is_callback_user_admin(client, query, target_chat_id=chat_id):
-            return await query.answer(
-                "❌ Only admins can unmute users!", show_alert=True
-            )
+    if len(message.command) < 2:
+        return await safe_reply_text(
+            message,
+            "⚙️ <b>Usage:</b> <code>/setflood &lt;messages&gt; [window_seconds]</code>\n"
+            "<b>Example:</b> <code>/setflood 5 5</code> (or <code>/setflood off</code>)",
+            parse_mode=enums.ParseMode.HTML,
+        )
 
-        MUTED_USERS.pop((chat_id, target_uid), None)
-        USER_MESSAGE_LOG.pop((chat_id, target_uid), None)
-
-        try:
-            await restrict_or_unrestrict_member(
-                client, chat_id, target_uid, can_send=True
-            )
-        except Exception:
-            pass
-
-        try:
-            await query.answer("🔓 User unmuted successfully!", show_alert=True)
-            await query.message.edit_text(
-                f"🔓 <b>User <code>{target_uid}</code> was unmuted by {query.from_user.mention}.</b>",
-                parse_mode=enums.ParseMode.HTML,
-            )
-            asyncio.create_task(delete_after_delay(query.message, 10))
-        except Exception:
-            pass
-        return
-
-    if not await is_callback_user_admin(client, query):
-        return await query.answer("❌ Unauthorized: Admins only!", show_alert=True)
+    arg1 = message.command[1].strip().lower()
+    if arg1 in ["off", "0", "disable", "false"]:
+        await update_flood_config(grp_id, {"enabled": False})
+        return await safe_reply_text(
+            message,
+            f"🔴 <b>Anti-Flood disabled for group <code>{grp_id}</code>.</b>",
+            parse_mode=enums.ParseMode.HTML,
+        )
 
     try:
-        if data == "af_close":
-            await query.answer("Closed!")
-            return await query.message.delete()
-
-        if data == "af_toggle":
-            FLOOD_ENABLED = not FLOOD_ENABLED
-            await query.answer(
-                f"Anti-Flood is now {'ENABLED' if FLOOD_ENABLED else 'DISABLED'}!"
-            )
-        elif data == "af_clear_mutes":
-            MUTED_USERS.clear()
-            USER_MESSAGE_LOG.clear()
-            await query.answer("🧹 All active flood mutes cleared!", show_alert=True)
-        else:
-            await query.answer("Refreshed!")
-
-        text, markup = _build_flood_panel()
-        await query.message.edit_text(
-            text, reply_markup=markup, parse_mode=enums.ParseMode.HTML
+        limit = max(2, int(arg1))
+        window = (
+            max(2, int(message.command[2])) if len(message.command) > 2 else 5
         )
-    except MessageNotModified:
-        pass
-    except QueryIdInvalid:
-        pass
-    except Exception as e:
-        logger.error(f"Anti-flood callback error: {e}")
+    except ValueError:
+        return await safe_reply_text(
+            message,
+            "❌ <b>Please provide valid integers.</b> Example: <code>/setflood 5 5</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    await update_flood_config(
+        grp_id, {"enabled": True, "limit": limit, "window": window}
+    )
+    text, markup = await _build_flood_panel(grp_id)
+    await safe_reply_text(
+        message, text, reply_markup=markup, parse_mode=enums.ParseMode.HTML
+    )
+
+
+@Client.on_message(filters.command("floodmode") & filters.incoming, group=-2)
+async def set_flood_mode_cmd(client: Client, message: Message):
+    grp_id = await resolve_target_group(message)
+    if not grp_id:
+        return await safe_reply_text(
+            message,
+            "⚠️ <b>No active group connected!</b>\nUse <code>/connect &lt;group_id&gt;</code> first.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    if not await is_user_admin(client, message, target_chat_id=grp_id):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Admin access required.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    if len(message.command) < 2 or message.command[1].lower() not in [
+        "delete",
+        "mute",
+        "kick",
+    ]:
+        return await safe_reply_text(
+            message,
+            "⚙️ <b>Usage:</b> <code>/floodmode &lt;delete|mute|kick&gt;</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    mode = message.command[1].lower()
+    await update_flood_config(grp_id, {"action": mode})
+    text, markup = await _build_flood_panel(grp_id)
+    await safe_reply_text(
+        message, text, reply_markup=markup, parse_mode=enums.ParseMode.HTML
+    )
+
+
+@Client.on_callback_query(filters.regex(r"^af_ctl:"), group=-2)
+async def antiflood_callbacks(client: Client, query: CallbackQuery):
+    parts = query.data.split(":")
+    action = parts[1]
+    chat_id = int(parts[-1])
+
+    if not await is_cb_admin(client, query, chat_id):
+        return await safe_answer(
+            query, "❌ Unauthorized: Group Admin only!", show_alert=True
+        )
+
+    if action == "close":
+        await safe_answer(query, "Closed!")
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        return
+
+    if action == "toggle":
+        cfg = await get_flood_config(chat_id, force_refresh=True)
+        new_state = not bool(cfg.get("enabled", True))
+        await update_flood_config(chat_id, {"enabled": new_state})
+        await safe_answer(
+            query,
+            f"🛡️ Anti-Flood {'ENABLED' if new_state else 'DISABLED'}!",
+            show_alert=False,
+        )
+    elif action == "mode":
+        new_mode = parts[2].lower()
+        await update_flood_config(chat_id, {"action": new_mode})
+        await safe_answer(
+            query, f"🔨 Penalty set to: {new_mode.upper()}", show_alert=False
+        )
+
+    text, markup = await _build_flood_panel(chat_id)
+    await safe_edit_text(
+        query.message, text, reply_markup=markup, parse_mode=enums.ParseMode.HTML
+    )
 
 
 # ============================================================
-# 🛡️ IRONCLAD ANTI-FLOOD LISTENER
+# ⚡ REAL-TIME GROUP ANTI-FLOOD ENFORCER
 # ============================================================
-@Client.on_message(filters.incoming & ~filters.service, group=-50)
-async def ironclad_antiflood_shield(client: Client, message: Message):
-    if not FLOOD_ENABLED:
+@Client.on_message(
+    filters.group & filters.incoming & ~filters.service & ~filters.bot,
+    group=-6,
+)
+async def group_antiflood_enforcer(client: Client, message: Message):
+    user = message.from_user
+    if not user or not message.chat:
         return
 
-    if not message.from_user or message.from_user.is_bot:
-        return
-
-    user_id = message.from_user.id
     chat_id = message.chat.id
-    chat_type = message.chat.type
-    mute_key = (chat_id, user_id)
+    user_id = user.id
 
-    # Verify immunity (Global Admins, Group Admins, Anonymous Admins, Linked Channels)
-    if await is_user_admin(client, message):
+    cfg = await get_flood_config(chat_id)
+    if not cfg.get("enabled", True):
+        return
+
+    limit = int(cfg.get("limit", 5))
+    window = int(cfg.get("window", 5))
+    if limit <= 0:
         return
 
     now = time.time()
+    key = (chat_id, user_id)
 
-    # 1. Silently drop and delete messages if user is already muted in this chat
-    if mute_key in MUTED_USERS:
-        if now < MUTED_USERS[mute_key]:
-            try:
-                await message.delete()
-            except (MessageDeleteForbidden, FloodWait, Exception):
-                pass
-            raise StopPropagation
-        else:
-            MUTED_USERS.pop(mute_key, None)
+    history = _USER_MSG_TRACKER.get(key, [])
+    history = [ts for ts in history if now - ts <= window]
+    history.append(now)
+    _USER_MSG_TRACKER[key] = history
 
-    # 2. Deduplicate media albums so 1 album of multiple photos/videos counts as 1 message
-    if message.media_group_id:
-        mg_id = str(message.media_group_id)
-        if mg_id in SEEN_MEDIA_GROUPS:
-            return
-        SEEN_MEDIA_GROUPS[mg_id] = now
+    if len(_USER_MSG_TRACKER) > 5000:
+        _USER_MSG_TRACKER.clear()
 
-    # 3. Record message timestamps and clear outside the sliding window
-    timestamps = USER_MESSAGE_LOG[mute_key]
-    USER_MESSAGE_LOG[mute_key] = [
-        t for t in timestamps if now - t <= FLOOD_WINDOW_SECONDS
-    ]
-    USER_MESSAGE_LOG[mute_key].append(now)
+    if len(history) <= limit:
+        return
 
-    # 4. Threshold check
-    if len(USER_MESSAGE_LOG[mute_key]) > MAX_MESSAGES_PER_WINDOW:
-        if mute_key in MUTED_PROCESSING_LOCK:
-            raise StopPropagation
+    # Bypass admins only when threshold is exceeded (saves API calls on normal messages)
+    if await is_user_admin(client, message, target_chat_id=chat_id):
+        _USER_MSG_TRACKER.pop(key, None)
+        return
 
-        MUTED_PROCESSING_LOCK.add(mute_key)
-        try:
-            MUTED_USERS[mute_key] = now + MUTE_DURATION_SECONDS
-            USER_MESSAGE_LOG[mute_key].clear()
-
-            # Delete trigger message
-            try:
-                await message.delete()
-            except Exception:
-                pass
-
-            mins = MUTE_DURATION_SECONDS // 60
-            mention = message.from_user.mention
-
-            # Apply group mute or private warning
-            if chat_type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-                unmute_kb = InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                "🔓 Unmute User (Admin)",
-                                callback_data=f"af_unmute:{chat_id}:{user_id}",
-                            )
-                        ]
-                    ]
-                )
-                try:
-                    await restrict_or_unrestrict_member(
-                        client=client,
-                        chat_id=chat_id,
-                        user_id=user_id,
-                        can_send=False,
-                        duration_sec=MUTE_DURATION_SECONDS,
-                    )
-                    warn = await client.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            f"🛑 <b>Anti-Flood Triggered!</b>\n\n"
-                            f"{mention} has been muted for <b>{mins} minutes</b> for spamming messages."
-                        ),
-                        reply_markup=unmute_kb,
-                        parse_mode=enums.ParseMode.HTML,
-                    )
-                    asyncio.create_task(delete_after_delay(warn, 30))
-                except (ChatAdminRequired, UserAdminInvalid):
-                    warn = await client.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            f"⚠️ {mention}, please slow down! "
-                            f"Your requests are being ignored for <b>{mins} minutes</b>."
-                        ),
-                        reply_markup=unmute_kb,
-                        parse_mode=enums.ParseMode.HTML,
-                    )
-                    asyncio.create_task(delete_after_delay(warn, 20))
-                except FloodWait as e:
-                    await asyncio.sleep(e.value + 1)
-                except Exception as e:
-                    logger.error(f"Anti-flood group mute failed: {e}")
-            else:
-                try:
-                    warn = await client.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            f"🛑 <b>Anti-Flood Shield Triggered!</b>\n\n"
-                            f"You sent too many messages too quickly. "
-                            f"Please wait <b>{mins} minutes</b> before sending more commands."
-                        ),
-                        parse_mode=enums.ParseMode.HTML,
-                    )
-                    asyncio.create_task(delete_after_delay(warn, 15))
-                except Exception:
-                    pass
-        finally:
-            MUTED_PROCESSING_LOCK.discard(mute_key)
-
-        raise StopPropagation
-
-
-async def delete_after_delay(msg: Message, delay: int):
-    await asyncio.sleep(delay)
+    # Delete flooding message
     try:
-        await msg.delete()
+        await message.delete()
     except Exception:
         pass
+
+    action = str(cfg.get("action", "delete")).lower()
+    mute_dur = int(cfg.get("mute_duration", 300))
+
+    if action == "mute":
+        try:
+            await client.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                permissions=build_chat_permissions(can_send=False),
+            )
+            asyncio.create_task(_unmute_later(client, chat_id, user_id, mute_dur))
+        except (ChatAdminRequired, FloodWait, Exception):
+            pass
+    elif action == "kick":
+        try:
+            await client.ban_chat_member(chat_id, user_id)
+            await asyncio.sleep(1)
+            await client.unban_chat_member(chat_id, user_id)
+        except (ChatAdminRequired, FloodWait, Exception):
+            pass
+
+    last_warn = _WARN_COOLDOWN.get(key, 0.0)
+    if now - last_warn >= 15.0:
+        _WARN_COOLDOWN[key] = now
+        penalty_note = (
+            "🔇 You have been muted for 5 minutes."
+            if action == "mute"
+            else (
+                "👢 You have been kicked from the group."
+                if action == "kick"
+                else "🗑️ Please slow down and avoid spamming!"
+            )
+        )
+        warn_msg = await safe_reply_text(
+            message,
+            f"⚠️ <b>Flooding Detected, {user.mention}!</b>\n{penalty_note}",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        if warn_msg:
+            asyncio.create_task(_delete_later(warn_msg, 8))
+
+    raise StopPropagation
