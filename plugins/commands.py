@@ -43,7 +43,6 @@ try:
         build_cleanwords_panel_ui,
         build_interactive_help_section,
         cw_db,
-        get_channels_page,
         get_default_file_keyboard,
         get_deleted_file_notify_keyboard,
         get_pm_autoreply_keyboard,
@@ -61,7 +60,6 @@ except ImportError:
         build_cleanwords_panel_ui,
         build_interactive_help_section,
         cw_db,
-        get_channels_page,
         get_default_file_keyboard,
         get_deleted_file_notify_keyboard,
         get_pm_autoreply_keyboard,
@@ -282,8 +280,8 @@ async def auto_delete_all_messages(
 
     if is_pm:
         notify_text = (
-            "<b>Successfully deleted your file, if you want request again in group.</b>"
-        )
+            dict_del_msg := getattr(info, "DEL_MSG", None)
+        ) or "<b>Successfully deleted your file, if you want request again in group.</b>"
         markup = get_deleted_file_notify_keyboard()
         try:
             await safe_send_message(
@@ -356,9 +354,10 @@ async def send_requested_file(
         else getattr(files, "full_file_id", getattr(files, "file_id", file_id))
     )
 
-    if CUSTOM_FILE_CAPTION:
+    custom_cap = getattr(info, "CUSTOM_FILE_CAPTION", CUSTOM_FILE_CAPTION)
+    if custom_cap:
         try:
-            f_caption = CUSTOM_FILE_CAPTION.format(
+            f_caption = custom_cap.format(
                 file_name="" if title == "Unknown" else title,
                 file_size="" if size == "0B" else size,
                 file_caption="" if not f_caption else f_caption,
@@ -377,6 +376,29 @@ async def send_requested_file(
     default_btn = get_default_file_keyboard()
     final_caption, final_keyboard = safe_parse_text_and_markup(f_caption, default_btn)
     protect = True if ident in ["filep", "checksubp"] else False
+
+    # Send optional Info Message / Info Image before delivering the file if configured
+    info_msg_txt = getattr(info, "INFO_MSG", None)
+    info_img_val = getattr(info, "INFO_IMG", None)
+    pre_info_msg = None
+    if info_msg_txt or info_img_val:
+        try:
+            if info_img_val and str(info_img_val).lower() != "none":
+                pre_info_msg = await client.send_photo(
+                    chat_id=user_id,
+                    photo=info_img_val,
+                    caption=info_msg_txt or "",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            elif info_msg_txt:
+                pre_info_msg = await safe_send_message(
+                    client,
+                    chat_id=user_id,
+                    text=info_msg_txt,
+                    parse_mode=enums.ParseMode.HTML,
+                )
+        except Exception:
+            pre_info_msg = None
 
     msg = None
     try:
@@ -455,7 +477,9 @@ async def send_requested_file(
             )
 
             if delete_timer > 0:
-                schedule_pm_auto_delete(client, user_id, True, delete_timer, msg, k)
+                schedule_pm_auto_delete(
+                    client, user_id, True, delete_timer, pre_info_msg, msg, k
+                )
         except Exception as e:
             logger.error(f"Auto-delete warning failed to send: {e}")
 
@@ -850,94 +874,6 @@ async def toggle_pm_autoreply_cmd(client: Client, message: Message):
         message,
         text,
         reply_markup=markup,
-        parse_mode=enums.ParseMode.HTML,
-    )
-
-
-# ============================================================
-# ⚙️ CHANNELS & LEAVE COMMANDS (ADMIN ONLY)
-# ============================================================
-@Client.on_message(filters.command(["channels", "channel"]) & filters.incoming)
-async def list_all_channels_cmd(client: Client, message: Message):
-    uid = (
-        message.from_user.id
-        if message.from_user
-        else getattr(message.sender_chat, "id", 0)
-    )
-    if not await is_global_admin(uid):
-        return await safe_reply_text(
-            message,
-            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
-            parse_mode=enums.ParseMode.HTML,
-        )
-
-    status_msg = await safe_reply_text(message, "⏳ Generating link database...")
-    text, reply_markup = await get_channels_page(client, page=1)
-    if status_msg:
-        await safe_edit_text(
-            status_msg,
-            text,
-            reply_markup=reply_markup,
-            disable_web_page_preview=True,
-            parse_mode=enums.ParseMode.HTML,
-        )
-
-
-@Client.on_message(filters.command(["leavechannel", "leave"]) & filters.incoming)
-async def leave_channel_cmd(client: Client, message: Message):
-    uid = (
-        message.from_user.id
-        if message.from_user
-        else getattr(message.sender_chat, "id", 0)
-    )
-    if not await is_global_admin(uid):
-        return await safe_reply_text(
-            message,
-            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
-            parse_mode=enums.ParseMode.HTML,
-        )
-
-    if len(message.command) < 2:
-        return await safe_reply_text(
-            message,
-            "⚙️ <b>Usage:</b> <code>/leavechannel &lt;channel_id&gt;</code>",
-            parse_mode=enums.ParseMode.HTML,
-        )
-    try:
-        chat_id_int = int(message.command[1].strip())
-    except ValueError:
-        return await safe_reply_text(message, "❌ Invalid Channel ID format.")
-
-    chat_title, tg_status, db_status = (
-        "Unknown Chat",
-        "⚠️ Not inside chat",
-        "⚠️ Not inside DB",
-    )
-    try:
-        chat = await client.get_chat(chat_id_int)
-        chat_title = chat.title or "Unknown"
-        await client.leave_chat(chat_id_int)
-        tg_status = "✅ Successfully left chat."
-    except Exception as e:
-        tg_status = f"⚠️ Could not leave Telegram chat: {e}"
-
-    try:
-        if hasattr(_db, "delete_chat"):
-            await _db.delete_chat(chat_id_int)
-        elif hasattr(_db, "grp"):
-            await _db.grp.delete_one({"id": chat_id_int})
-            await _db.grp.delete_one({"chat_id": chat_id_int})
-        db_status = "✅ Removed from Database."
-    except Exception as e:
-        db_status = f"❌ DB Remove Error: {e}"
-
-    await safe_reply_text(
-        message,
-        f"🎯 <b>Operation Complete:</b>\n\n"
-        f"<b>Name:</b> {chat_title}\n"
-        f"<b>ID:</b> <code>{chat_id_int}</code>\n\n"
-        f"<b>Telegram Status:</b> {tg_status}\n"
-        f"<b>Database Status:</b> {db_status}",
         parse_mode=enums.ParseMode.HTML,
     )
 
