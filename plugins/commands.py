@@ -280,8 +280,9 @@ async def auto_delete_all_messages(
 
     if is_pm:
         notify_text = (
-            dict_del_msg := getattr(info, "DEL_MSG", None)
-        ) or "<b>Successfully deleted your file, if you want request again in group.</b>"
+            (dict_del_msg := getattr(info, "DEL_MSG", None))
+            or "<b>Successfully deleted your file, if you want request again in group.</b>"
+        )
         markup = get_deleted_file_notify_keyboard()
         try:
             await safe_send_message(
