@@ -244,9 +244,7 @@ async def safe_del_promo(url: str) -> bool:
             pass
     if _promo_col is not None:
         try:
-            res = await _promo_col.delete_many(
-                {"$or": [{"url": url}, {"text": url}]}
-            )
+            res = await _promo_col.delete_many({"$or": [{"url": url}, {"text": url}]})
             if res.deleted_count > 0:
                 deleted = True
         except Exception:
