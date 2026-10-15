@@ -433,7 +433,9 @@ async def caption_dashboard_cb(client: Client, query: CallbackQuery):
             return await query.message.delete()
         elif action == "reset_cap":
             await save_custom_data("CUSTOM_FILE_CAPTION", None)
-            await safe_answer(query, "✅ File Caption reset to default!", show_alert=True)
+            await safe_answer(
+                query, "✅ File Caption reset to default!", show_alert=True
+            )
         elif action == "reset_plus":
             await save_custom_data("CAPTION_PLUS", None)
             await safe_answer(query, "✅ Caption Plus footer removed!", show_alert=True)
