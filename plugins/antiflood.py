@@ -154,9 +154,7 @@ _USER_MSG_TRACKER: Dict[Tuple[int, int], List[float]] = {}
 _WARN_COOLDOWN: Dict[Tuple[int, int], float] = {}
 
 
-async def get_flood_config(
-    chat_id: int, force_refresh: bool = False
-) -> Dict[str, Any]:
+async def get_flood_config(chat_id: int, force_refresh: bool = False) -> Dict[str, Any]:
     cid = int(chat_id)
     now = time.time()
     if not force_refresh and cid in _FLOOD_CONFIG_CACHE:
@@ -194,9 +192,7 @@ async def update_flood_config(chat_id: int, updates: Dict[str, Any]):
     cur.update(updates)
     if _flood_db is not None:
         try:
-            await _flood_db.update_one(
-                {"chat_id": cid}, {"$set": updates}, upsert=True
-            )
+            await _flood_db.update_one({"chat_id": cid}, {"$set": updates}, upsert=True)
         except Exception as e:
             logger.error(f"update_flood_config error: {e}")
     _FLOOD_CONFIG_CACHE[cid] = (time.time(), cur)
@@ -336,9 +332,7 @@ async def is_user_admin(
     return False
 
 
-async def is_cb_admin(
-    client: Client, query: CallbackQuery, chat_id: int
-) -> bool:
+async def is_cb_admin(client: Client, query: CallbackQuery, chat_id: int) -> bool:
     if not query or not query.from_user:
         return False
     uid = query.from_user.id
@@ -399,17 +393,13 @@ async def _build_flood_panel(chat_id: int) -> Tuple[str, InlineKeyboardMarkup]:
                     callback_data=f"af_ctl:mode:kick:{chat_id}",
                 ),
             ],
-            [
-                InlineKeyboardButton("🔐 Close", callback_data=f"af_ctl:close:{chat_id}")
-            ],
+            [InlineKeyboardButton("🔐 Close", callback_data=f"af_ctl:close:{chat_id}")],
         ]
     )
     return text, buttons
 
 
-@Client.on_message(
-    filters.command(["antiflood", "flood"]) & filters.incoming, group=-2
-)
+@Client.on_message(filters.command(["antiflood", "flood"]) & filters.incoming, group=-2)
 async def antiflood_panel_cmd(client: Client, message: Message):
     grp_id = await resolve_target_group(message)
     if not grp_id:
@@ -475,9 +465,7 @@ async def set_flood_limit_cmd(client: Client, message: Message):
 
     try:
         limit = max(2, int(arg1))
-        window = (
-            max(2, int(message.command[2])) if len(message.command) > 2 else 5
-        )
+        window = max(2, int(message.command[2])) if len(message.command) > 2 else 5
     except ValueError:
         return await safe_reply_text(
             message,
