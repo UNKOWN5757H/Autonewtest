@@ -1415,8 +1415,8 @@ async def build_result_buttons(
     has_active_filter = bool(active_lang or active_qual)
     from_dym = bool(state.get("from_dym") and SUGGESTIONS_CACHE.get(key))
 
-    lang_btn_text = f"🔊 {active_lang}" if active_lang else "🔊 Language"
-    qual_btn_text = f"🎥 {active_qual}" if active_qual else "🎥 Quality"
+    lang_btn_text = f"🔊 {active_lang}" if active_lang else "🔊"
+    qual_btn_text = f"🎥 {active_qual}" if active_qual else "🎥"
 
     btn = [
         # 1. Blue button: 🎖️Lᴀᴛᴇsᴛ Mᴏᴠɪᴇ Uᴘᴅᴀᴛᴇs🎖️
