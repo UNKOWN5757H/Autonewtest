@@ -1,1689 +1,1014 @@
 import asyncio
-import base64
-import io
-import math
-import random
+import builtins
+import inspect
 import re
-import time
-import traceback
-from datetime import datetime
-from io import BytesIO
 from logging import ERROR, getLogger
-from typing import Optional
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-import requests
-from motor.motor_asyncio import AsyncIOMotorClient
 from pyrogram import Client, enums, filters
 from pyrogram.errors import (
-    ChatAdminRequired,
+    ChatWriteForbidden,
     FloodWait,
+    Forbidden,
+    MessageIdInvalid,
     MessageNotModified,
     PeerIdInvalid,
     QueryIdInvalid,
     UserIsBlocked,
 )
-from pyrogram.types import (
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
-)
+from pyrogram.types import CallbackQuery, Message
+
+# Ensure typing aliases exist in builtins before importing other plugins
+for _t_name, _t_obj in (
+    ("Tuple", Tuple),
+    ("List", List),
+    ("Dict", Dict),
+    ("Optional", Optional),
+    ("Union", Union),
+    ("Set", Set),
+    ("Any", Any),
+):
+    if not hasattr(builtins, _t_name):
+        setattr(builtins, _t_name, _t_obj)
 
 import info
-from database.ia_filterdb import Media as _Media
-from database.ia_filterdb import get_file_details, unpack_new_file_id
-from database.plugin_dbs import plugin_db as _plugin_db
+from database.ia_filterdb import get_file_details
 from database.users_chats_db import db as _db
-from info import CUSTOM_FILE_CAPTION, LOG_CHANNEL, PICS
-from plugins.custom_settings import get_group_welcome, get_ui
-from plugins.customlines import ForceSub
-from Script import script
-from utils import (
-    admin_filter,
-    get_admin_list,
-    get_poster,
-    get_settings,
-    get_size,
-    get_uid,
-    is_subscribed,
-    parse_text_and_markup,
-    temp,
-)
+from info import AUTH_CHANNEL, CUSTOM_FILE_CAPTION, REQ_CHANNEL
+from utils import get_size, is_subscribed, temp
+
+try:
+    from plugins.uibuttons import (
+        _invalidate_pm_filter_clean_cache,
+        build_cleanwords_panel_ui,
+        build_interactive_help_section,
+        cw_db,
+        get_channels_page,
+        get_default_file_keyboard,
+        get_deleted_file_notify_keyboard,
+        get_pm_autoreply_keyboard,
+        get_pm_settings,
+        is_global_admin,
+        is_user_banned,
+        is_waiting_for_cmd_input,
+        safe_parse_text_and_markup,
+        save_pm_settings,
+        upload_image_safely,
+    )
+except ImportError:
+    from uibuttons import (
+        _invalidate_pm_filter_clean_cache,
+        build_cleanwords_panel_ui,
+        build_interactive_help_section,
+        cw_db,
+        get_channels_page,
+        get_default_file_keyboard,
+        get_deleted_file_notify_keyboard,
+        get_pm_autoreply_keyboard,
+        get_pm_settings,
+        is_global_admin,
+        is_user_banned,
+        is_waiting_for_cmd_input,
+        safe_parse_text_and_markup,
+        save_pm_settings,
+        upload_image_safely,
+    )
 
 logger = getLogger(__name__)
 logger.setLevel(ERROR)
 
-# ============================================================
-# ⚙️ MONGODB & GLOBALS SETUP
-# ============================================================
-_del_db = _countdown_col = search_stats_col = users_col = chats_col = media_col = None
-AUTO_DELETE_TASKS = set()
-_COUNTDOWN_WORKER_STARTED = False
-
-MESSAGE_EMOJI_PLANE = "✈️"
-MESSAGE_EMOJI_LINK = "🔗"
-
-# 🟢 RESTORED BUTTON COLORS
+# Safe optional import for ForceSub
 try:
-    from pyrogram.enums import ButtonStyle
+    from plugins.fsub import ForceSub
+except Exception as _fsub_err:
+    logger.error(f"Could not import ForceSub from plugins.fsub: {_fsub_err}")
+    ForceSub = None
 
-    BTN_PRIMARY = getattr(ButtonStyle, "PRIMARY", 1)
-    BTN_SUCCESS = getattr(ButtonStyle, "SUCCESS", 3)
-    BTN_DANGER = getattr(ButtonStyle, "DANGER", 4)
-    BTN_SECONDARY = getattr(ButtonStyle, "SECONDARY", 2)
+
+# ============================================================
+# 🛡️ PYROGRAM v2.2.26 (LAYER 230) COMPATIBILITY ENGINE
+# ============================================================
+try:
+    from pyrogram.types import LinkPreviewOptions
 except ImportError:
-    BTN_PRIMARY, BTN_SUCCESS, BTN_DANGER, BTN_SECONDARY = 1, 3, 4, 2
+    LinkPreviewOptions = None
 
 try:
-    _DB_CLIENT = AsyncIOMotorClient(info.DATABASE_URI)
-    _BOT_DB = _DB_CLIENT[info.DATABASE_NAME]
-    _del_db = _BOT_DB["deletion_settings"]
-    _countdown_col = _BOT_DB["countdown_tasks"]
-    search_stats_col = _BOT_DB["search_analytics"]
-    users_col = _BOT_DB["users"]
-    chats_col = _BOT_DB["chats"]
-    media_col = _BOT_DB[getattr(info, "COLLECTION_NAME", "Anime_Files")]
-except Exception as e:
-    logger.error(f"Failed to init DBs: {e}")
+    from pyrogram.types import ReplyParameters
+except ImportError:
+    ReplyParameters = None
+
+_SEND_MSG_PARAMS = set(inspect.signature(Client.send_message).parameters.keys())
+_REPLY_PARAMS = set(inspect.signature(Message.reply_text).parameters.keys())
+_EDIT_PARAMS = set(inspect.signature(Message.edit_text).parameters.keys())
+
+
+def _prepare_compat_kwargs(
+    kwargs: dict, supported_params: set, disable_preview: Optional[bool] = None
+) -> dict:
+    clean_kw = dict(kwargs)
+    explicit_disable = clean_kw.pop("disable_web_page_preview", disable_preview)
+
+    if explicit_disable is not None:
+        if "disable_web_page_preview" in supported_params:
+            clean_kw["disable_web_page_preview"] = bool(explicit_disable)
+        elif (
+            "link_preview_options" in supported_params
+            and LinkPreviewOptions is not None
+        ):
+            try:
+                clean_kw["link_preview_options"] = LinkPreviewOptions(
+                    is_disabled=bool(explicit_disable)
+                )
+            except Exception:
+                pass
+
+    if "reply_to_message_id" in clean_kw:
+        rep_id = clean_kw.pop("reply_to_message_id")
+        if rep_id:
+            if "reply_to_message_id" in supported_params:
+                clean_kw["reply_to_message_id"] = rep_id
+            elif "reply_parameters" in supported_params and ReplyParameters is not None:
+                try:
+                    clean_kw["reply_parameters"] = ReplyParameters(message_id=rep_id)
+                except Exception:
+                    pass
+
+    return clean_kw
+
+
+async def safe_reply_text(
+    message: Message, text: str, disable_web_page_preview: bool = True, **kwargs
+):
+    compat_kw = _prepare_compat_kwargs(
+        kwargs, _REPLY_PARAMS, disable_preview=disable_web_page_preview
+    )
+    try:
+        return await message.reply_text(text, **compat_kw)
+    except TypeError:
+        compat_kw.pop("disable_web_page_preview", None)
+        compat_kw.pop("link_preview_options", None)
+        compat_kw.pop("reply_parameters", None)
+        compat_kw.pop("reply_to_message_id", None)
+        return await message.reply_text(text, **compat_kw)
+    except (ChatWriteForbidden, Forbidden, UserIsBlocked, PeerIdInvalid):
+        return None
+
+
+async def safe_edit_text(
+    message: Message, text: str, disable_web_page_preview: bool = True, **kwargs
+):
+    compat_kw = _prepare_compat_kwargs(
+        kwargs, _EDIT_PARAMS, disable_preview=disable_web_page_preview
+    )
+    try:
+        return await message.edit_text(text, **compat_kw)
+    except TypeError:
+        compat_kw.pop("disable_web_page_preview", None)
+        compat_kw.pop("link_preview_options", None)
+        return await message.edit_text(text, **compat_kw)
+    except (MessageNotModified, MessageIdInvalid, ChatWriteForbidden, Forbidden):
+        return None
+
+
+async def safe_send_message(
+    client: Client,
+    chat_id: int,
+    text: str,
+    disable_web_page_preview: Optional[bool] = True,
+    **kwargs,
+):
+    compat_kw = _prepare_compat_kwargs(
+        kwargs, _SEND_MSG_PARAMS, disable_preview=disable_web_page_preview
+    )
+    try:
+        return await client.send_message(chat_id=chat_id, text=text, **compat_kw)
+    except TypeError:
+        compat_kw.pop("disable_web_page_preview", None)
+        compat_kw.pop("link_preview_options", None)
+        compat_kw.pop("reply_parameters", None)
+        compat_kw.pop("reply_to_message_id", None)
+        return await client.send_message(chat_id=chat_id, text=text, **compat_kw)
+    except (ChatWriteForbidden, Forbidden, UserIsBlocked, PeerIdInvalid):
+        return None
+
+
+async def safe_answer(
+    query: CallbackQuery,
+    text: Optional[str] = None,
+    show_alert: bool = False,
+    url: Optional[str] = None,
+):
+    """Safely answers a CallbackQuery without ever raising QueryIdInvalid."""
+    if not query:
+        return
+    try:
+        kwargs: Dict[str, Any] = {"show_alert": show_alert}
+        if text is not None:
+            kwargs["text"] = str(text)[:200]
+        if url is not None:
+            kwargs["url"] = url
+        await query.answer(**kwargs)
+    except (QueryIdInvalid, Exception):
+        pass
 
 
 # ============================================================
 # 🛠️ HELPER FUNCTIONS
 # ============================================================
-class SafeDict(dict):
-    def __missing__(self, key):
-        return "{" + key + "}"
-
-
-def create_btn(text, url=None, callback_data=None, style=None):
-    kwargs = {"text": text}
-    if url:
-        kwargs["url"] = url
-    if callback_data:
-        kwargs["callback_data"] = callback_data
-    if style is not None:
-        kwargs["style"] = style
-    try:
-        return InlineKeyboardButton(**kwargs)
-    except TypeError:
-        kwargs.pop("style", None)
-        return InlineKeyboardButton(**kwargs)
-
-
-async def get_del_setting(key: str, default: int) -> int:
-    doc = await _del_db.find_one({"_id": "timers"}) if _del_db is not None else None
-    return int(doc[key]) if doc and key in doc else int(getattr(info, key, default))
-
-
-async def save_del_setting(key: str, value: int):
-    setattr(info, key, value)
-    if _del_db is not None:
-        await _del_db.update_one({"_id": "timers"}, {"$set": {key: value}}, upsert=True)
+def get_html_text(message: Message) -> Optional[str]:
+    if message.reply_to_message:
+        reply_msg = message.reply_to_message
+        raw = reply_msg.text or reply_msg.caption
+        if raw:
+            return getattr(raw, "html", str(raw))
+    if message.text and len(message.command) > 1:
+        html_text = getattr(message.text, "html", str(message.text))
+        return re.sub(r"^/\w+(?:@[a-zA-Z0-9_]+)?\s+", "", html_text, count=1)
+    return None
 
 
 def parse_timer(var_name: str, default_time: int = 1800) -> int:
     try:
         global_switch = getattr(info, "AUTO_DELETE", True)
-        if str(global_switch).strip().lower() in ["false", "off", "0"]:
+        if str(global_switch).strip().lower() in ["false", "off", "0", "no"]:
             return 0
         val = getattr(info, "AUTO_DELETE_TIME", getattr(info, var_name, default_time))
-        return 1800 if isinstance(val, bool) and val else int(val)
+        if isinstance(val, bool):
+            return 1800 if val else 0
+        parsed_time = int(str(val).strip())
+        return 1800 if 0 < parsed_time < 10 else max(0, parsed_time)
     except Exception:
         return 1800
 
 
-async def live_text_auto_delete(client, msg1, msg2, delay):
-    await asyncio.sleep(delay)
-    try:
-        await client.delete_messages(msg1.chat.id, [msg1.id, msg2.id])
-    except Exception:
-        pass
-
-
-@Client.on_message(filters.command("dbtest"))
-async def dbtest_cmd(client: Client, message: Message):
-    msg = await message.reply_text("⏳ Testing Database Connection...")
-    try:
-        await _BOT_DB.command("ping")
-        await msg.edit_text("✅ **Database Connected Successfully!**")
-    except Exception as e:
-        await msg.edit_text(f"❌ **Database Connection Failed:**\n`{str(e)}`")
-
-
-# ============================================================
-# 🛡️ GROUP GATEKEEPER & WELCOME ENGINE
-# ============================================================
-TELEGRAM_LINK_PATTERN = re.compile(
-    r"(https?://)?(www\.)?(t(elegram)?\.(me|dog)|telegram\.org)/(joinchat/|[a-zA-Z0-9_]+)",
-    re.IGNORECASE,
-)
-
-
-async def is_group_admin(bot: Client, chat_id: int, user_id: int) -> bool:
-    if user_id in get_admin_list():
+async def run_force_sub(client: Client, message: Message, file_id=False, mode=False):
+    if not callable(ForceSub):
         return True
     try:
-        member = await bot.get_chat_member(chat_id, user_id)
-        return member.status in [
-            enums.ChatMemberStatus.ADMINISTRATOR,
-            enums.ChatMemberStatus.OWNER,
-        ]
-    except Exception:
-        return False
-
-
-@Client.on_message(filters.group & ~filters.service, group=-2)
-async def group_gatekeeper_and_link_protector(bot: Client, message: Message):
-    if not getattr(message, "from_user", None):
-        return
-    if await is_group_admin(bot, message.chat.id, message.from_user.id):
-        return
-
-    text = message.text or message.caption or ""
-    if TELEGRAM_LINK_PATTERN.search(text):
+        return await ForceSub(client, message, file_id=file_id, mode=mode)
+    except TypeError:
         try:
-            await message.delete()
-            warning = await message.reply_text(
-                f"⚠️ **Link Deleted!** {message.from_user.mention}, unauthorized invite links are not permitted in this group."
-            )
-            await asyncio.sleep(8)
-            await warning.delete()
-        except Exception:
-            pass
-        return
+            return await ForceSub(client, message, file_id=file_id)
+        except TypeError:
+            return await ForceSub(client, message)
+    except Exception as e:
+        logger.error(f"ForceSub error: {e}")
+        return True
 
-    if (
-        getattr(message, "forward_from_chat", None)
-        and message.forward_from_chat.type == enums.ChatType.CHANNEL
-    ):
+
+# ============================================================
+# ⏳ SILENT AUTO-DELETE ENGINE
+# ============================================================
+AUTO_DELETE_TASKS = set()
+
+
+async def auto_delete_all_messages(
+    client: Client, chat_id: int, is_pm: bool, delay: int, *messages
+):
+    await asyncio.sleep(delay)
+
+    msg_ids = [m.id for m in messages if m is not None and hasattr(m, "id") and m.id]
+    if msg_ids:
         try:
-            await message.delete()
-            warning = await message.reply_text(
-                f"⚠️ **Channel Forward Blocked!** {message.from_user.mention}, forwarding messages from external channels is prohibited."
-            )
-            await asyncio.sleep(8)
-            await warning.delete()
+            await client.delete_messages(chat_id, msg_ids)
         except Exception:
-            pass
-        return
-
-
-@Client.on_message(filters.new_chat_members & filters.group)
-async def save_group(bot: Client, message: Message):
-    new_members = [u.id for u in message.new_chat_members]
-    if temp.ME in new_members:
-        if not await _db.get_chat(message.chat.id):
-            try:
-                total = await bot.get_chat_members_count(message.chat.id)
-            except Exception:
-                total = 0
-            added_by = (
-                message.from_user.mention
-                if getattr(message, "from_user", None)
-                else "Anonymous"
-            )
-            if LOG_CHANNEL:
-                try:
-                    await bot.send_message(
-                        LOG_CHANNEL,
-                        getattr(script, "LOG_TEXT_G", "").format(
-                            message.chat.title, message.chat.id, total, added_by
-                        ),
-                    )
-                except Exception:
-                    pass
-            await _db.add_chat(message.chat.id, message.chat.title)
-
-        if message.chat.id in temp.BANNED_CHATS:
-            support = getattr(info, "SUPPORT_CHAT", "")
-            btn = (
-                [[InlineKeyboardButton("🤖 ADMINS", url=f"https://t.me/{support}")]]
-                if support
-                else []
-            )
-            await message.reply_text(
-                "<b>🚫 This chat is restricted!\nMy admins have disabled me here.</b>",
-                reply_markup=InlineKeyboardMarkup(btn) if btn else None,
-            )
-            await bot.leave_chat(message.chat.id)
-            return
-
-        bot_user = temp.U_NAME or (await bot.get_me()).username
-        btn = [
-            [
-                InlineKeyboardButton(
-                    "ℹ️ Help", url=f"https://t.me/{bot_user}?start=help"
-                ),
-                InlineKeyboardButton(
-                    "📖 About", url=f"https://t.me/{bot_user}?start=about"
-                ),
-            ]
-        ]
-        await message.reply_text(
-            f"<b>Thanks for adding me to {message.chat.title} ❣️</b>",
-            reply_markup=InlineKeyboardMarkup(btn),
-        )
-    else:
-        settings = await get_settings(message.chat.id)
-        if settings.get("welcome"):
-            w_settings = await get_group_welcome(message.chat.id)
-            w_txt = (
-                w_settings.get("text") or "<b>👋 Hey {mention}, welcome to {title}!</b>"
-            )
-            w_img = w_settings.get("img")
-            try:
-                total_members = await bot.get_chat_members_count(message.chat.id)
-            except Exception:
-                total_members = ""
-
-            for user in message.new_chat_members:
-                formatted_text = w_txt.format(
-                    mention=user.mention, title=message.chat.title, count=total_members
-                )
-                old_msg = temp.MELCOW.get(message.chat.id)
-                if old_msg:
+            for msg in messages:
+                if msg:
                     try:
-                        await old_msg.delete()
+                        await msg.delete()
                     except Exception:
                         pass
-                if w_img:
-                    temp.MELCOW[message.chat.id] = await message.reply_photo(
-                        photo=w_img,
-                        caption=formatted_text,
-                        parse_mode=enums.ParseMode.DEFAULT,
-                    )
-                else:
-                    temp.MELCOW[message.chat.id] = await message.reply_text(
-                        text=formatted_text, parse_mode=enums.ParseMode.DEFAULT
-                    )
 
-
-# ============================================================
-# 💬 BASIC GROUP COMMANDS
-# ============================================================
-@Client.on_message(filters.command("leave") & admin_filter)
-async def leave_chat(bot: Client, message: Message):
-    if len(message.command) == 1:
-        return await message.reply_text("⚠️ Usage: `/leave <chat_id>`")
-    try:
-        chat_id = int(message.command[1])
-    except ValueError:
-        return await message.reply_text("❌ Invalid chat ID!")
-    try:
-        await bot.leave_chat(chat_id)
-        await message.reply_text(f"✅ Left the chat `{chat_id}` successfully.")
-    except Exception as e:
-        await message.reply_text(f"⚠️ Error: `{e}`")
-
-
-@Client.on_message(filters.command("disable") & admin_filter)
-async def disable_chat(bot: Client, message: Message):
-    if len(message.command) == 1:
-        return await message.reply_text("⚠️ Usage: `/disable <chat_id> [reason]`")
-    parts = message.text.split(None, 2)
-    try:
-        chat_id = int(parts[1])
-    except ValueError:
-        return await message.reply_text("❌ Invalid chat ID!")
-    reason = parts[2] if len(parts) > 2 else "No reason provided."
-
-    chat_info = await _db.get_chat(chat_id)
-    if not chat_info:
-        return await message.reply_text("⚠️ Chat not found in DB.")
-    if chat_info.get("is_disabled"):
-        return await message.reply_text(
-            f"🚷 This chat is already disabled.\nReason: `{chat_info.get('reason', 'Unknown')}`"
+    if is_pm:
+        notify_text = (
+            "<b>Successfully deleted your file, if you want request again in group.</b>"
         )
-
-    await _db.disable_chat(chat_id, reason)
-    if chat_id not in temp.BANNED_CHATS:
-        temp.BANNED_CHATS.append(chat_id)
-    await message.reply_text(f"✅ Chat `{chat_id}` successfully disabled.")
-    try:
-        await bot.leave_chat(chat_id)
-    except Exception:
-        pass
-
-
-@Client.on_message(filters.command("enable") & admin_filter)
-async def enable_chat(bot: Client, message: Message):
-    if len(message.command) == 1:
-        return await message.reply_text("⚙️ Usage: `/enable <chat_id>`")
-    try:
-        chat_id = int(message.command[1])
-    except ValueError:
-        return await message.reply_text("❌ Invalid chat ID!")
-
-    chat_info = await _db.get_chat(chat_id)
-    if not chat_info:
-        return await message.reply_text("⚠️ Chat not found in DB.")
-    if not chat_info.get("is_disabled"):
-        return await message.reply_text("✅ This chat is already enabled.")
-
-    await _db.re_enable_chat(chat_id)
-    if chat_id in temp.BANNED_CHATS:
-        temp.BANNED_CHATS.remove(chat_id)
-    await message.reply_text(f"✅ Chat `{chat_id}` successfully re-enabled.")
-
-
-# ============================================================
-# 📊 ANALYTICS ENGINE
-# ============================================================
-@Client.on_message(
-    filters.text
-    & filters.incoming
-    & ~filters.bot
-    & ~filters.command(list("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")),
-    group=10,
-)
-async def silent_search_tracker(client: Client, message: Message):
-    if search_stats_col is None:
-        return
-    query = message.text.strip().lower()
-    if len(query) < 2 or len(query) > 60:
-        return
-    if re.match(r"https?://\S+|t\.me/\S+|@\w+", query):
-        return
-
-    clean_query = re.sub(
-        r"(?i)\b(1080p|720p|480p|2160p|4k|mkv|mp4|avi|hdrip|web-?dl|webrip|bluray|brrip|dvdrip|x264|x265|hevc|dual audio|hindi|kannada|telugu|tamil|malayalam|english|subtitles|subs|episodes|season\s*\d+|s\d+e\d+|complete)\b",
-        "",
-        query,
-    )
-    clean_query = re.sub(r"[\-\|:;_\[\]\(\)\{\}]", " ", clean_query)
-    clean_query = re.sub(r"\s+", " ", clean_query).strip()
-    if len(clean_query) < 2:
-        return
-
-    asyncio.create_task(
-        search_stats_col.update_one(
-            {"date": datetime.now().strftime("%Y-%m-%d"), "query": clean_query},
-            {"$inc": {"count": 1}},
-            upsert=True,
-        )
-    )
-
-
-@Client.on_message(filters.command("analize") & admin_filter)
-async def live_dashboard_command(client: Client, message: Message):
-    msg = await message.reply_text("⏳ **Fetching Live Analytics...**")
-    try:
-        today = datetime.now().strftime("%Y-%m-%d")
-        top_searches = (
-            await search_stats_col.find({"date": today})
-            .sort("count", -1)
-            .limit(15)
-            .to_list(length=15)
-            if search_stats_col is not None
-            else []
-        )
-        total_searches_agg = (
-            await search_stats_col.aggregate(
-                [
-                    {"$match": {"date": today}},
-                    {"$group": {"_id": None, "total": {"$sum": "$count"}}},
-                ]
-            ).to_list(length=1)
-            if search_stats_col is not None
-            else []
-        )
-        total_searches_today = (
-            total_searches_agg[0]["total"] if total_searches_agg else 0
-        )
-
-        total_users = (
-            await users_col.count_documents({}) if users_col is not None else 0
-        )
-        total_chats = (
-            await chats_col.count_documents({}) if chats_col is not None else 0
-        )
-        total_files = (
-            await media_col.count_documents({}) if media_col is not None else 0
-        )
-
-        dash_text = f"📊 **ENTERPRISE ANALYTICS DASHBOARD** 📊\n━━━━━━━━━━━━━━━━━━━━\n\n📈 **NETWORK STATS:**\n👥 **Total Users:** `{total_users:,}`\n📢 **Total Groups:** `{total_chats:,}`\n📂 **Total Files Indexed:** `{total_files:,}`\n\n🔥 **LIVE AUDIENCE DEMAND (Today):**\n🔍 **Total Queries Processed:** `{total_searches_today:,}`\n\n🏆 **TOP 15 TRENDING SEARCHES:**\n"
-        if top_searches:
-            for idx, s in enumerate(top_searches, 1):
-                dash_text += (
-                    f"  **{idx}.** `{s['query'].title()}` ➔ _{s['count']} requests_\n"
-                )
-        else:
-            dash_text += "  _No searches tracked yet today._\n"
-        dash_text += "\n💡 _Tip: Use /exportstats to download the complete search history._\n━━━━━━━━━━━━━━━━━━━━\n"
-        await msg.edit_text(dash_text)
-    except Exception as e:
-        await msg.edit_text(f"❌ **Dashboard Generation Failed:**\n`{str(e)}`")
-
-
-@Client.on_message(filters.command("exportstats") & admin_filter)
-async def export_stats_command(client: Client, message: Message):
-    msg = await message.reply_text(
-        "⏳ **Generating Complete Search History Report...**"
-    )
-    try:
-        if search_stats_col is None:
-            return await msg.edit_text("❌ Database not connected.")
-        all_searches = (
-            await search_stats_col.find({})
-            .sort([("date", -1), ("count", -1)])
-            .to_list(length=None)
-        )
-        if not all_searches:
-            return await msg.edit_text("⚠️ No search data available to export.")
-
-        report_lines = ["📊 COMPLETE SEARCH ANALYTICS EXPORT 📊", "=" * 40, ""]
-        for s in all_searches:
-            report_lines.append(
-                f"Date: {s.get('date')} | Count: {s.get('count')} | Query: {s.get('query')}"
+        markup = get_deleted_file_notify_keyboard()
+        try:
+            await safe_send_message(
+                client,
+                chat_id,
+                text=notify_text,
+                reply_markup=markup,
+                parse_mode=enums.ParseMode.HTML,
             )
-
-        file_io = BytesIO("\n".join(report_lines).encode("utf-8"))
-        file_io.name = f"Search_Analytics_{datetime.now().strftime('%Y%m%d')}.txt"
-        await message.reply_document(
-            document=file_io,
-            caption="✅ **Complete Search Statistics Exported Successfully!**",
-        )
-        await msg.delete()
-    except Exception as e:
-        await msg.edit_text(f"❌ **Export Failed:**\n`{str(e)}`")
-
-
-@Client.on_message(filters.command("optimize_db") & admin_filter)
-async def optimize_mongodb(client: Client, message: Message):
-    msg = await message.reply_text(
-        "🚀 **Initiating Database Core Optimization...**\n_Please wait, this might take a few seconds._"
-    )
-    try:
-        if media_col is None:
-            return await msg.edit_text("❌ **Error:** Media collection not found.")
-        try:
-            await media_col.drop_index("media_text_index")
-        except Exception:
-            pass
-        try:
-            await media_col.drop_index("file_name_text")
         except Exception:
             pass
 
-        await media_col.create_index([("file_name", "text")])
-        await media_col.create_index([("file_id", 1)])
-        await media_col.create_index([("file_size", -1)])
-        if search_stats_col is not None:
-            try:
-                await search_stats_col.create_index(
-                    [("date", 1), ("query", 1)], unique=True
-                )
-            except Exception:
-                pass
-        await msg.edit_text(
-            "✅ **MongoDB Core Optimization Complete!**\n\n**Upgrades Applied:**\n➤ `$text` search index injected.\n➤ Fast-Sort index added for `file_size`.\n➤ Analytics background indexes synced.\n\n🔥 _Your bot is now operating at Peak Enterprise Level!_"
-        )
-    except Exception as e:
-        await msg.edit_text(f"❌ **Optimization Failed:**\n`{str(e)}`")
+
+def schedule_pm_auto_delete(
+    client: Client, chat_id: int, is_pm: bool, delay: int, *messages
+):
+    if delay <= 0:
+        return
+    task = asyncio.create_task(
+        auto_delete_all_messages(client, chat_id, is_pm, delay, *messages)
+    )
+    AUTO_DELETE_TASKS.add(task)
+    task.add_done_callback(AUTO_DELETE_TASKS.discard)
 
 
 # ============================================================
-# 🗑️ AUTOMATIC DELETION
+# 📦 SHARED FILE SENDER LOGIC & FILE CALLBACK HANDLER
 # ============================================================
-@Client.on_message(filters.command("purgeduplicates") & admin_filter)
-async def purge_duplicates_cmd(client: Client, message: Message):
-    status = await message.reply_text(
-        "🔍 **Scanning database for duplicate files...**\nThis might take some time on large databases."
-    )
-
-    def get_resolution_score(filename: str) -> int:
-        name = filename.lower()
-        if any(q in name for q in ["2160p", "4k", "uhd"]):
-            return 4
-        if any(q in name for q in ["1440p", "2k"]):
-            return 3
-        if any(q in name for q in ["1080p", "fhd"]):
-            return 2
-        if any(q in name for q in ["720p", "hd"]):
-            return 1
-        return 0
-
-    try:
-        duplicate_groups = await _Media.collection.aggregate(
-            [
-                {
-                    "$group": {
-                        "_id": "$file_name",
-                        "count": {"$sum": 1},
-                        "docs": {
-                            "$push": {
-                                "id": "$_id",
-                                "size": "$file_size",
-                                "name": "$file_name",
-                            }
-                        },
-                    }
-                },
-                {"$match": {"count": {"$gt": 1}}},
-            ]
-        ).to_list(length=None)
-        if not duplicate_groups:
-            return await status.edit_text(
-                "✅ **Database is squeaky clean!** No duplicate files found."
-            )
-
-        total_duplicates = 0
-        deleted_ids = []
-        for group in duplicate_groups:
-            docs = group["docs"]
-            docs.sort(
-                key=lambda d: (
-                    get_resolution_score(d.get("name", "")),
-                    d.get("size", 0),
-                ),
-                reverse=True,
-            )
-            for d in docs[1:]:
-                deleted_ids.append(d["id"])
-                total_duplicates += 1
-
-        for i in range(0, len(deleted_ids), 500):
-            await _Media.collection.delete_many(
-                {"_id": {"$in": deleted_ids[i : i + 500]}}
-            )
-        await status.edit_text(
-            f"🧹 **Duplicate File Purge Completed!**\n\n📁 **Duplicate Sets Found:** `{len(duplicate_groups)}`\n🗑️ **Redundant Copies Removed:** `{total_duplicates}`\n✨ **Preserved:** Best quality copies."
-        )
-    except Exception as e:
-        await status.edit_text(f"❌ **Error while purging duplicates:**\n`{e}`")
-
-
-@Client.on_message(filters.command("delete") & admin_filter)
-async def delete_single_file(bot: Client, message: Message):
-    try:
-        if len(message.command) == 2:
-            file_id = message.command[1].strip()
-            status_msg = await message.reply_text("🧹 **Deleting file from DB...**")
-            result = await _Media.collection.delete_one({"_id": file_id})
-            return await status_msg.edit_text(
-                f"✅ **File `{file_id}` deleted successfully.**"
-                if result.deleted_count
-                else "⚠️ **File not found in database.**"
-            )
-
-        reply = message.reply_to_message
-        if not (reply and reply.media):
-            return await message.reply_text(
-                "⚙️ **Usage:**\n`/delete <file_id>`\nOr reply to a file with `/delete`"
-            )
-
-        status_msg = await message.reply_text("⏳ **Processing...**")
-        media = getattr(reply, reply.media.value, None) if reply.media else None
-        if not media:
-            return await status_msg.edit_text(
-                "❌ **This is not a supported file format.**"
-            )
-
-        file_id, _ = unpack_new_file_id(media.file_id)
-        if (await _Media.collection.delete_one({"_id": file_id})).deleted_count:
-            return await status_msg.edit_text(
-                "✅ **File successfully deleted from database.**"
-            )
-
-        file_name = re.sub(r"(_|\-|\.|\+)", " ", str(getattr(media, "file_name", "")))
-        res = await _Media.collection.delete_many(
-            {
-                "file_name": file_name,
-                "file_size": getattr(media, "file_size", 0),
-                "mime_type": getattr(media, "mime_type", ""),
-            }
-        )
-        await status_msg.edit_text(
-            f"✅ **Deleted {res.deleted_count} duplicate files from database.**"
-            if res.deleted_count
-            else "⚠️ **File not found in database.**"
-        )
-    except Exception as e:
-        await message.reply_text(f"❌ **Error while deleting:**\n`{e}`")
-
-
-@Client.on_message(filters.command("delmulti") & admin_filter)
-async def delete_multiple_files(bot: Client, message: Message):
-    if len(message.command) < 2:
-        return await message.reply_text("⚙️ **Usage:** `/delmulti <keyword/name>`")
-    keyword = message.text.split(None, 1)[1]
-    status_msg = await message.reply_text(
-        f"⏳ **Searching and deleting files matching:** `{keyword}`..."
-    )
-    try:
-        result = await _Media.collection.delete_many(
-            {"file_name": {"$regex": keyword, "$options": "i"}}
-        )
-        await status_msg.edit_text(
-            f"✅ **Successfully deleted `{result.deleted_count}` files matching:** `{keyword}`"
-            if result.deleted_count > 0
-            else f"⚠️ **No files found matching:** `{keyword}`"
-        )
-    except Exception as e:
-        await status_msg.edit_text(f"❌ **Error while deleting files:**\n`{e}`")
-
-
-@Client.on_message(filters.command("autodelete") & admin_filter)
-async def set_autodelete_timer(bot: Client, message: Message):
-    current = await get_del_setting("FILE_AUTO_DELETE", 1800)
-    if len(message.command) < 2:
-        return await message.reply_text(
-            f"⚙️ **Usage:** `/autodelete [seconds]`\n\n⏱ **Current File Auto-Delete:** `{current}` seconds."
-        )
-    try:
-        seconds = int(message.command[1])
-        if seconds < 0:
-            raise ValueError
-        await save_del_setting("FILE_AUTO_DELETE", seconds)
-        await message.reply_text(
-            "✅ **File Auto-Delete has been DISABLED permanently.**"
-            if seconds == 0
-            else f"✅ **File Auto-Delete permanently set to:** `{seconds}` seconds."
-        )
-    except ValueError:
-        await message.reply_text(
-            "❌ **Invalid duration!** Please provide a valid positive integer."
-        )
-
-
-@Client.on_message(filters.command("buttondel") & admin_filter)
-async def set_buttondel_timer(bot: Client, message: Message):
-    current = await get_del_setting("BUTTON_AUTO_DELETE", 1800)
-    if len(message.command) < 2:
-        return await message.reply_text(
-            f"⚙️ **Usage:** `/buttondel [seconds]`\n\n⏱ **Current Button Auto-Delete:** `{current}` seconds."
-        )
-    try:
-        seconds = int(message.command[1])
-        if seconds < 0:
-            raise ValueError
-        await save_del_setting("BUTTON_AUTO_DELETE", seconds)
-        await message.reply_text(
-            "✅ **Group Button Auto-Delete has been DISABLED permanently.**"
-            if seconds == 0
-            else f"✅ **Group Button Auto-Delete permanently set to:** `{seconds}` seconds."
-        )
-    except ValueError:
-        await message.reply_text(
-            "❌ **Invalid duration!** Please provide a valid positive integer."
-        )
-
-
-# ============================================================
-# 💬 ID / INFO / IMDB COMMANDS
-# ============================================================
-@Client.on_message(filters.command("id"))
-async def show_id(client: Client, message: Message):
-    chat_type = message.chat.type
-    if chat_type == enums.ChatType.PRIVATE:
-        user = message.from_user
-        await message.reply_text(
-            f"<b>👤 First Name:</b> {getattr(user, 'first_name', 'Unknown')}\n<b>🆔 Telegram ID:</b> <code>{user.id}</code>"
-        )
-    elif chat_type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        text = f"<b>🆔 Chat ID:</b> <code>{message.chat.id}</code>\n"
-        if message.reply_to_message:
-            text += f"<b>👤 Replied User ID:</b> <code>{getattr(message.reply_to_message, 'from_user', None).id if getattr(message.reply_to_message, 'from_user', None) else 'Anonymous'}</code>\n"
-        await message.reply_text(text)
-
-
-@Client.on_message(filters.command("info"))
-async def who_is(client: Client, message: Message):
-    status = await message.reply_text("🔍 Fetching user info...")
-    try:
-        user = None
-        if getattr(message, "reply_to_message", None) and getattr(
-            message.reply_to_message, "from_user", None
-        ):
-            user = message.reply_to_message.from_user
-        elif len(message.command) > 1:
-            try:
-                user = await client.get_users(message.text.split(None, 1)[1])
-            except Exception:
-                pass
-        if not user:
-            user = getattr(message, "from_user", None)
-        if not user:
-            return await status.edit_text("⚠️ No valid user found.")
-        text = f"<b>👤 First Name:</b> {getattr(user, 'first_name', 'Unknown')}\n<b>🧾 Last Name:</b> {getattr(user, 'last_name', 'None')}\n<b>🆔 Telegram ID:</b> <code>{user.id}</code>\n<b>💬 Username:</b> @{getattr(user, 'username', 'None')}\n<b>🔗 User Link:</b> <a href='tg://user?id={user.id}'>Click Here</a>\n"
-        markup = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🔐 Close", callback_data="close_data")]]
-        )
-        if user.photo:
-            try:
-                await message.reply_photo(
-                    photo=user.photo.big_file_id,
-                    caption=text,
-                    reply_markup=markup,
-                    parse_mode=enums.ParseMode.HTML,
-                )
-                await status.delete()
-                return
-            except Exception:
-                pass
-        await message.reply_text(
-            text, reply_markup=markup, parse_mode=enums.ParseMode.HTML
-        )
-        await status.delete()
-    except Exception:
-        await status.edit_text("❌ An error occurred while fetching user data.")
-
-
-@Client.on_message(filters.command(["imdb", "search"]))
-async def imdb_search(client: Client, message: Message):
-    if len(message.command) < 2:
-        return await message.reply_text("🎬 **Usage:** `/imdb Movie or Series Name`")
-    query = message.text.split(None, 1)[1]
-    wait_msg = await message.reply_text("🔎 Searching IMDb...")
-    try:
-        movies = await get_poster(query, bulk=True)
-        if not movies:
-            return await wait_msg.edit_text("❌ No results found on IMDb.")
-        buttons = []
-        for movie in movies[:10]:
-            m_id = (
-                getattr(movie, "movieID", None)
-                or (movie.get("movieID") if isinstance(movie, dict) else None)
-                or movie.get("id", "")
-            )
-            title = getattr(movie, "title", None) or (
-                movie.get("title") if isinstance(movie, dict) else "Unknown"
-            )
-            year = getattr(movie, "year", None) or (
-                movie.get("year") if isinstance(movie, dict) else ""
-            )
-            if m_id:
-                buttons.append(
-                    [
-                        InlineKeyboardButton(
-                            f"{title} ({year})" if year else title,
-                            callback_data=f"imdb#{m_id}",
-                        )
-                    ]
-                )
-        if not buttons:
-            return await wait_msg.edit_text("❌ Could not parse IMDb results.")
-        await wait_msg.edit_text(
-            "🎥 **Here's what I found:**", reply_markup=InlineKeyboardMarkup(buttons)
-        )
-    except Exception as e:
-        await wait_msg.edit_text(f"⚠️ IMDb search error: `{e}`")
-
-
-@Client.on_callback_query(filters.regex(r"^imdb#"))
-async def imdb_callback(client: Client, query: CallbackQuery):
-    try:
-        _, movie_id = query.data.split("#")
-        await query.answer("Fetching Details...", show_alert=False)
-        imdb = await get_poster(query=movie_id, id=True)
-        if not imdb:
-            return await query.message.edit_text("❌ No IMDb results found.")
-        url = imdb.get("url", f"https://www.imdb.com/title/tt{movie_id}/")
-        buttons = [[InlineKeyboardButton(f"{imdb.get('title', 'IMDb Link')}", url=url)]]
-        format_args = SafeDict(
-            query=imdb.get("title", "N/A"),
-            title=imdb.get("title", "N/A"),
-            votes=imdb.get("votes", "N/A"),
-            aka=imdb.get("aka", "N/A"),
-            seasons=imdb.get("seasons", "N/A"),
-            box_office=imdb.get("box_office", "N/A"),
-            localized_title=imdb.get("localized_title", "N/A"),
-            kind=imdb.get("kind", "N/A"),
-            imdb_id=imdb.get("imdb_id", movie_id),
-            cast=imdb.get("cast", "N/A"),
-            runtime=imdb.get("runtime", "N/A"),
-            countries=imdb.get("countries", "N/A"),
-            certificates=imdb.get("certificates", "N/A"),
-            languages=imdb.get("languages", "N/A"),
-            director=imdb.get("director", "N/A"),
-            writer=imdb.get("writer", "N/A"),
-            producer=imdb.get("producer", "N/A"),
-            composer=imdb.get("composer", "N/A"),
-            cinematographer=imdb.get("cinematographer", "N/A"),
-            music_team=imdb.get("music_team", "N/A"),
-            distributors=imdb.get("distributors", "N/A"),
-            release_date=imdb.get("release_date", "N/A"),
-            year=imdb.get("year", "N/A"),
-            genres=imdb.get("genres", "N/A"),
-            poster=imdb.get("poster", "N/A"),
-            plot=imdb.get("plot", "N/A"),
-            rating=imdb.get("rating", "N/A"),
-            url=url,
-        )
-        caption = getattr(
-            info,
-            "IMDB_TEMPLATE",
-            """🎬 **Title:** <a href="{url}">{title}</a> ({year})\n⭐️ **Rating:** {rating} / 10\n🎭 **Genres:** {genres}\n🗣 **Languages:** {languages}\n⏰ **Runtime:** {runtime}\n📜 **Plot:** {plot}""",
-        ).format_map(format_args)
-        if imdb.get("poster"):
-            try:
-                await query.message.reply_photo(
-                    photo=imdb["poster"],
-                    caption=caption,
-                    reply_markup=InlineKeyboardMarkup(buttons),
-                )
-            except Exception:
-                await query.message.reply_photo(
-                    photo=imdb["poster"].replace(".jpg", "._V1_UX360.jpg"),
-                    caption=caption,
-                    reply_markup=InlineKeyboardMarkup(buttons),
-                )
-            await query.message.delete()
-        else:
-            await query.message.edit_text(
-                caption,
-                reply_markup=InlineKeyboardMarkup(buttons),
-                disable_web_page_preview=False,
-            )
-    except Exception:
-        pass
-
-
-# ============================================================
-# 🌐 UI ROUTING AND START COMMAND
-# ============================================================
-def build_dynamic_keyboard(custom_buttons, static_buttons):
-    keyboard, row = [], []
-    for btn in custom_buttons:
-        ibtn = create_btn(
-            btn["text"],
-            url=btn["url"],
-            style={
-                "blue": BTN_PRIMARY,
-                "green": BTN_SUCCESS,
-                "red": BTN_DANGER,
-                "normal": None,
-            }.get(btn.get("color", "normal")),
-        )
-        if btn.get("layout") == "sidebyside":
-            row.append(ibtn)
-            if len(row) == 2:
-                keyboard.append(row)
-                row = []
-        else:
-            if row:
-                keyboard.append(row)
-            keyboard.append([ibtn])
-            row = []
-    if row:
-        keyboard.append(row)
-    keyboard.extend(static_buttons)
-    return InlineKeyboardMarkup(keyboard)
-
-
-async def get_start_keyboard(user_id):
-    ui = (await get_ui()) or {}
-    static_buttons = [
-        [
-            create_btn(
-                "✈️ Gʀᴏᴜᴘ 1",
-                url="https://t.me/Sandalwood_Kannada_Group",
-                style=BTN_PRIMARY,
-            ),
-            create_btn(
-                "✈️ Gʀᴏᴜᴘ 2", url="http://t.me/Kannada_Filmy_Group", style=BTN_PRIMARY
-            ),
-            create_btn(
-                "✈️ Gʀᴏᴜᴘ 3", url="https://t.me/+GLsPkRgLGGszMzY1", style=BTN_PRIMARY
-            ),
-        ]
-    ]
-    if user_id in get_admin_list():
-        static_buttons.append(
-            [
-                create_btn("ℹ️ 𝙷𝚎𝚕𝚙", callback_data="help"),
-                create_btn("😊 𝙰𝚋𝚘𝚞𝚝", callback_data="about"),
-            ]
-        )
-    static_buttons.append(
-        [
-            create_btn(
-                "🔗 Nᴇᴡ Rᴇʟᴇᴀꜱᴇꜱ & Oᴛᴛ Uᴘᴅᴀᴛᴇꜱ",
-                url="https://t.me/sandalwood_kannada_moviesz",
-                style=BTN_SUCCESS,
-            )
-        ]
-    )
-    return build_dynamic_keyboard(ui.get("start_buttons", []), static_buttons)
-
-
-async def get_help_keyboard():
-    return InlineKeyboardMarkup(
-        [
-            [
-                create_btn("🖥️ UI Start", callback_data="helps_uistart"),
-                create_btn("🖥️ UI Help", callback_data="helps_uihelp"),
-                create_btn("🖥️ UI About", callback_data="helps_uiabout"),
-            ],
-            [
-                create_btn("👋 Welcome", callback_data="helps_welcome"),
-                create_btn("🖼️ Images", callback_data="helps_images"),
-            ],
-            [
-                create_btn("🔍 Spell Check", callback_data="helps_spell"),
-                create_btn("📝 Filters", callback_data="helps_filters"),
-            ],
-            [
-                create_btn("📱 Force Sub", callback_data="helps_forcesub"),
-                create_btn("👥 Force Add", callback_data="helps_forceadd"),
-            ],
-            [
-                create_btn("🚫 Bans", callback_data="helps_bans"),
-                create_btn("🗑️ Delete", callback_data="helps_delete"),
-            ],
-            [
-                create_btn("📢 Promotions", callback_data="helps_promotions"),
-                create_btn("📚 Index", callback_data="helps_index"),
-            ],
-            [
-                create_btn("⚙ Settings", callback_data="helps_settings"),
-                create_btn("🌐 Connections", callback_data="helps_connections"),
-            ],
-            [
-                create_btn("📊 Utilities", callback_data="helps_utilities"),
-                create_btn("💬 Custom Messages", callback_data="helps_custommessages"),
-            ],
-            [
-                create_btn("📝 Post Handle", callback_data="helps_posthand"),
-                create_btn("📝 Custom Captions", callback_data="helps_customcaption"),
-            ],
-            [
-                create_btn("🧬 Auto post", callback_data="helps_autopost"),
-                create_btn("💬 Pm Auto Reply", callback_data="helps_pmautoreply"),
-            ],
-            [create_btn("💾 Backup", callback_data="helps_backup", style=BTN_SUCCESS)],
-            [
-                create_btn("🔙 Back", callback_data="start", style=BTN_PRIMARY),
-                create_btn("🔐 Cʟᴏsᴇ", callback_data="close_data", style=BTN_DANGER),
-            ],
-        ]
-    )
-
-
-async def get_channels_page(client: Client, page: int = 1):
-    raw_chats = await _db.get_all_chats()
-    all_chats = (
-        await raw_chats.to_list(length=None)
-        if hasattr(raw_chats, "to_list")
-        else list(raw_chats)
-    )
-    total_chats, page_size = len(all_chats), 15
-    total_pages = max(1, math.ceil(total_chats / page_size))
-    page = max(1, min(page, total_pages))
-    start_idx = (page - 1) * page_size
-    current_chats = all_chats[start_idx : start_idx + page_size]
-    text = f"📑 <b>All Connected Channels & Groups</b> (Page {page}/{total_pages})\n\n"
-
-    for i, chat in enumerate(current_chats, start=start_idx + 1):
-        chat_id = chat.get("id") or chat.get("chat_id")
-        title = chat.get("title") or chat.get("name") or "Unknown"
-        link = (
-            f"https://t.me/{chat.get('username')}"
-            if chat.get("username")
-            else "Private / No Link"
-        )
-        if not chat.get("username"):
-            try:
-                chat_obj = await client.get_chat(chat_id)
-                link = (
-                    f"https://t.me/{chat_obj.username}"
-                    if chat_obj.username
-                    else (
-                        chat_obj.invite_link
-                        or await client.export_chat_invite_link(chat_id)
-                    )
-                )
-            except Exception:
-                link = f"https://t.me/c/{str(chat_id)[4:] if str(chat_id).startswith('-100') else str(chat_id)}/1"
-        text += (
-            f"<b>{i}. {title}</b>\n🔗 Link: {link}\n🆔 ID: <code>{chat_id}</code>\n\n"
-        )
-
-    buttons, nav_row = [], []
-    if page > 1:
-        nav_row.append(
-            create_btn(
-                "⬅️ Previous",
-                callback_data=f"channels_page#{page - 1}",
-                style=BTN_PRIMARY,
-            )
-        )
-    if page < total_pages:
-        nav_row.append(
-            create_btn(
-                "Next ➡️", callback_data=f"channels_page#{page + 1}", style=BTN_PRIMARY
-            )
-        )
-    if nav_row:
-        buttons.append(nav_row)
-    buttons.append(
-        [create_btn("🔐 Close", callback_data="close_data", style=BTN_DANGER)]
-    )
-    return text, InlineKeyboardMarkup(buttons)
-
-
-async def transition_ui_message(client, msg_obj, text, keyboard, img=None):
-    try:
-        if img:
-            if (
-                getattr(msg_obj, "photo", None)
-                or getattr(msg_obj, "video", None)
-                or getattr(msg_obj, "document", None)
-            ):
-                await msg_obj.edit_caption(
-                    caption=text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML
-                )
-            else:
-                await msg_obj.delete()
-                await client.send_photo(
-                    chat_id=msg_obj.chat.id,
-                    photo=img,
-                    caption=text,
-                    reply_markup=keyboard,
-                    parse_mode=enums.ParseMode.HTML,
-                )
-        else:
-            if (
-                getattr(msg_obj, "photo", None)
-                or getattr(msg_obj, "video", None)
-                or getattr(msg_obj, "document", None)
-            ):
-                await msg_obj.delete()
-                await client.send_message(
-                    chat_id=msg_obj.chat.id,
-                    text=text,
-                    reply_markup=keyboard,
-                    parse_mode=enums.ParseMode.HTML,
-                )
-            else:
-                await msg_obj.edit_text(
-                    text=text, reply_markup=keyboard, parse_mode=enums.ParseMode.HTML
-                )
-    except MessageNotModified:
-        pass
-    except Exception as e:
-        logger.error(f"UI Transition Error: {e}")
-
-
-@Client.on_message(filters.command(["start", "help"]))
-async def start(client: Client, message: Message):
-    try:
-        uid = get_uid(message)
-        if getattr(info, "REPAIR_MODE", False) and uid not in get_admin_list():
-            return await message.reply_text(
-                "🛠️ <b>Bot is currently under maintenance!</b>",
+async def send_requested_file(
+    client: Client,
+    user_id: int,
+    file_id: str,
+    ident: str = "file",
+    reply_target: Message = None,
+    query: CallbackQuery = None,
+):
+    files_ = await get_file_details(file_id)
+    if not files_:
+        if query:
+            await safe_answer(query, "⚠️ No such file exists.", show_alert=True)
+        elif reply_target:
+            await safe_reply_text(
+                reply_target,
+                "⚠️ No such file exists.",
                 parse_mode=enums.ParseMode.HTML,
             )
-        if getattr(message, "from_user", None) and await _plugin_db.is_banned(uid):
-            return
+        return
 
-        bot_uname = temp.U_NAME or "my_bot"
-        b_name = temp.B_NAME or "MovieBot"
-        ui = (await get_ui()) or {}
-
-        is_help_command = (message.command[0] == "help") or (
-            len(message.command) == 2 and message.command[1] == "help"
-        )
-
-        format_vars = SafeDict(
-            mention=getattr(message.from_user, "mention", "User"),
-            first=getattr(message.from_user, "first_name", "User"),
-            first_name=getattr(message.from_user, "first_name", "User"),
-            name=getattr(message.from_user, "first_name", "User"),
-            id=uid,
-            uname=bot_uname,
-            bname=b_name,
-            plane_emoji=MESSAGE_EMOJI_PLANE,
-            link_emoji=MESSAGE_EMOJI_LINK,
-        )
-
-        if is_help_command:
-            text = (
-                ui.get("help_text") or getattr(script, "HELP_TXT", "Help Menu")
-            ).format_map(format_vars)
-            final_text, final_keyboard = parse_text_and_markup(
-                text, await get_help_keyboard()
-            )
-            img = ui.get("help_img")
-            if img:
-                return await message.reply_photo(
-                    photo=img,
-                    caption=final_text,
-                    reply_markup=final_keyboard,
-                    parse_mode=enums.ParseMode.HTML,
-                )
-            else:
-                return await message.reply_text(
-                    text=final_text,
-                    reply_markup=final_keyboard,
-                    parse_mode=enums.ParseMode.HTML,
-                )
-
-        if message.chat and message.chat.type in [
-            enums.ChatType.GROUP,
-            enums.ChatType.SUPERGROUP,
-        ]:
-            raw_text = (
-                ui.get("start_text") or getattr(script, "START_TXT", "Welcome")
-            ).format_map(format_vars)
-            final_text, final_keyboard = parse_text_and_markup(
-                raw_text,
-                await get_start_keyboard(
-                    uid if getattr(message, "from_user", None) else 0
-                ),
-            )
-            await message.reply(
-                final_text, reply_markup=final_keyboard, parse_mode=enums.ParseMode.HTML
-            )
-            await asyncio.sleep(2)
-            if not await _db.get_chat(message.chat.id):
-                try:
-                    total = await client.get_chat_members_count(message.chat.id)
-                except Exception:
-                    total = 0
-                try:
-                    await client.send_message(
-                        LOG_CHANNEL,
-                        getattr(script, "LOG_TEXT_G", "").format(
-                            message.chat.title, message.chat.id, total, "Unknown"
-                        ),
-                    )
-                except Exception:
-                    pass
-                await _db.add_chat(message.chat.id, message.chat.title)
-            return
-
-        if not await _db.is_user_exist(uid):
-            await _db.add_user(uid, getattr(message.from_user, "first_name", "Unknown"))
-            try:
-                await client.send_message(
-                    LOG_CHANNEL,
-                    getattr(script, "LOG_TEXT_P", "").format(
-                        uid, getattr(message.from_user, "mention", "Unknown")
-                    ),
-                )
-            except Exception:
-                pass
-
-        if len(message.command) != 2 or message.command[1] in ["error", "okay", "hehe"]:
-            raw_text = (
-                ui.get("start_text") or getattr(script, "START_TXT", "Welcome")
-            ).format_map(format_vars)
-            final_text, final_keyboard = parse_text_and_markup(
-                raw_text, await get_start_keyboard(uid)
-            )
-            db_img = ui.get("start_img")
-            photo_to_send = (
-                db_img if db_img else (random.choice(PICS) if PICS else None)
-            )
-            try:
-                if photo_to_send:
-                    try:
-                        await message.reply_photo(
-                            photo=photo_to_send,
-                            caption=final_text,
-                            reply_markup=final_keyboard,
-                            parse_mode=enums.ParseMode.HTML,
-                        )
-                    except Exception:
-                        await message.reply_text(
-                            text=final_text,
-                            reply_markup=final_keyboard,
-                            parse_mode=enums.ParseMode.HTML,
-                        )
-                else:
-                    await message.reply_text(
-                        text=final_text,
-                        reply_markup=final_keyboard,
-                        parse_mode=enums.ParseMode.HTML,
-                    )
-            except (UserIsBlocked, PeerIdInvalid):
-                pass
-            return
-
-        cmd_data = message.command[1]
-        if cmd_data == "subscribe":
-            return await ForceSub(client, message)
-
-        if cmd_data.startswith("search_") or cmd_data.startswith("hdra_"):
-            query = ""
-            try:
-                if cmd_data.startswith("search_"):
-                    query = cmd_data.replace("search_", "").replace("_", " ")
-                else:
-                    token = cmd_data.replace("hdra_", "")
-                    padding = 4 - (len(token) % 4)
-                    if padding != 4:
-                        token += "=" * padding
-                    query = base64.urlsafe_b64decode(token.encode("utf-8")).decode(
-                        "utf-8"
-                    )
-                message.text = query
-                from plugins.pm_filter import auto_filter
-
-                return await auto_filter(client, message)
-            except Exception:
-                return await message.reply_text(
-                    f"🔍 **Search Query:** `{query}`\n\nTap the text above to copy it, then send it to me to search!"
-                )
-
-        kk, file_id = cmd_data.split("_", 1) if "_" in cmd_data else (False, False)
-        pre = ("checksubp" if kk == "filep" else "checksub") if kk else False
-
-        status = await ForceSub(client, message, file_id=file_id or cmd_data, mode=pre)
-        if not status:
-            return
-
-        files_ = await get_file_details(file_id or cmd_data)
-        if not files_:
-            return await message.reply_text(
-                "⚠️ No such file exists.", parse_mode=enums.ParseMode.HTML
-            )
-
-        files = files_[0]
-        title = str(
-            files.get("file_name", "Unknown")
+    files = files_[0]
+    title = str(
+        files.get("file_name", "Unknown")
+        if isinstance(files, dict)
+        else getattr(files, "file_name", "Unknown")
+    )
+    size = get_size(
+        int(
+            files.get("file_size", 0)
             if isinstance(files, dict)
-            else getattr(files, "file_name", "Unknown")
+            else getattr(files, "file_size", 0)
         )
-        size = get_size(
-            int(
-                files.get("file_size", 0)
-                if isinstance(files, dict)
-                else getattr(files, "file_size", 0)
-            )
-        )
-        f_caption = str(
-            files.get("caption", "")
-            if isinstance(files, dict)
-            else getattr(files, "caption", "")
-        )
-        db_file_id = (
-            files.get("full_file_id", files.get("file_id", file_id or cmd_data))
-            if isinstance(files, dict)
-            else getattr(
-                files, "full_file_id", getattr(files, "file_id", file_id or cmd_data)
-            )
-        )
+    )
+    f_caption = str(
+        files.get("caption", "")
+        if isinstance(files, dict)
+        else getattr(files, "caption", "")
+    )
+    db_file_id = (
+        files.get("full_file_id", files.get("file_id", file_id))
+        if isinstance(files, dict)
+        else getattr(files, "full_file_id", getattr(files, "file_id", file_id))
+    )
 
-        if getattr(info, "CUSTOM_FILE_CAPTION", None):
-            try:
-                f_caption = info.CUSTOM_FILE_CAPTION.format(
-                    file_name="" if title == "Unknown" else title,
-                    file_size="" if size == "0B" else size,
-                    file_caption="" if not f_caption else f_caption,
-                )
-            except Exception:
-                pass
-        if not f_caption:
-            f_caption = f"<b>{title}</b>"
-
-        final_caption, final_keyboard = parse_text_and_markup(
-            f_caption,
-            InlineKeyboardMarkup(
-                [
-                    [
-                        create_btn(
-                            text="🎥 ಕನ್ನಡ ಹೊಸ ಮೂವೀಗಳು 🎥",
-                            url="https://t.me/Sandalwood_kannada_moviesz",
-                            style=BTN_SUCCESS,
-                        )
-                    ]
-                ]
-            ),
-        )
-
-        msg = None
+    if CUSTOM_FILE_CAPTION:
         try:
-            msg = await client.send_cached_media(
-                chat_id=uid,
-                file_id=db_file_id,
-                caption=final_caption,
-                reply_markup=final_keyboard,
-                protect_content=True if kk in ["filep", "checksubp"] else False,
-                parse_mode=enums.ParseMode.HTML,
-            )
-        except FloodWait as e:
-            await asyncio.sleep(e.value + 1)
-            msg = await client.send_cached_media(
-                chat_id=uid,
-                file_id=db_file_id,
-                caption=final_caption,
-                reply_markup=final_keyboard,
-                protect_content=True if kk in ["filep", "checksubp"] else False,
-                parse_mode=enums.ParseMode.HTML,
+            f_caption = CUSTOM_FILE_CAPTION.format(
+                file_name="" if title == "Unknown" else title,
+                file_size="" if size == "0B" else size,
+                file_caption="" if not f_caption else f_caption,
             )
         except Exception:
-            try:
-                msg = await client.send_document(
-                    chat_id=uid,
-                    document=db_file_id,
-                    caption=final_caption,
-                    reply_markup=final_keyboard,
-                    protect_content=(
-                        True if ident in ["filep", "checksubp"] else False
-                    ),
-                    parse_mode=enums.ParseMode.HTML,
+            pass
+
+    if not f_caption:
+        f_caption = f"<b>{title}</b>"
+    elif not f_caption.strip().startswith("<b>"):
+        f_caption = f"<b>{f_caption}</b>"
+
+    if getattr(info, "CAPTION_PLUS", None):
+        f_caption += f"\n\n{info.CAPTION_PLUS}"
+
+    default_btn = get_default_file_keyboard()
+    final_caption, final_keyboard = safe_parse_text_and_markup(f_caption, default_btn)
+    protect = True if ident in ["filep", "checksubp"] else False
+
+    msg = None
+    try:
+        msg = await client.send_cached_media(
+            chat_id=user_id,
+            file_id=db_file_id,
+            caption=final_caption,
+            reply_markup=final_keyboard,
+            protect_content=protect,
+            parse_mode=enums.ParseMode.HTML,
+        )
+    except FloodWait as e:
+        await asyncio.sleep(e.value + 1)
+        msg = await client.send_cached_media(
+            chat_id=user_id,
+            file_id=db_file_id,
+            caption=final_caption,
+            reply_markup=final_keyboard,
+            protect_content=protect,
+            parse_mode=enums.ParseMode.HTML,
+        )
+    except (UserIsBlocked, PeerIdInvalid):
+        if query and getattr(temp, "U_NAME", None):
+            return await safe_answer(
+                query, url=f"https://t.me/{temp.U_NAME}?start={ident}_{file_id}"
+            )
+        return
+    except Exception:
+        try:
+            msg = await client.send_document(
+                chat_id=user_id,
+                document=db_file_id,
+                caption=final_caption,
+                reply_markup=final_keyboard,
+                protect_content=protect,
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except (UserIsBlocked, PeerIdInvalid):
+            if query and getattr(temp, "U_NAME", None):
+                return await safe_answer(
+                    query, url=f"https://t.me/{temp.U_NAME}?start={ident}_{file_id}"
                 )
-            except Exception as err:
-                return await message.reply_text(
+            return
+        except Exception as err:
+            if query:
+                return await safe_answer(query, f"⚠️ Error: {err}", show_alert=True)
+            if reply_target:
+                return await safe_reply_text(
+                    reply_target,
                     f"⚠️ <b>Error:</b>\n<code>{err}</code>",
                     parse_mode=enums.ParseMode.HTML,
                 )
+            return
 
-        if msg:
-            try:
-                delete_timer = parse_timer("FILE_AUTO_DELETE", 1800)
-                if delete_timer > 0:
-                    min_, sec_ = divmod(delete_timer, 60)
-                    time_str = (
-                        f"{min_} Minutes {sec_} Seconds"
-                        if sec_ > 0
-                        else f"{min_} Minutes"
-                    )
-                    k = await client.send_message(
-                        chat_id=uid,
-                        text=f"<b>📢 Please Note\n\n✅ The above file will be autodeleted in {time_str} to avoid copyright issues.\n\n✅ Please forward this file to your saved messages and start downloading from there.\n\nTᴇᴀᴍ: @KR_Picture</b>",
-                        reply_to_message_id=msg.id,
-                        parse_mode=enums.ParseMode.HTML,
-                    )
-                    task = asyncio.create_task(
-                        live_text_auto_delete(client, msg, k, delete_timer)
-                    )
-                    AUTO_DELETE_TASKS.add(task)
-                    task.add_done_callback(AUTO_DELETE_TASKS.discard)
-            except Exception:
-                pass
-    except Exception as e:
+    if query:
+        await safe_answer(query, "📥 File sent to your PM!")
+
+    if msg:
         try:
-            await message.reply_text(
-                f"❌ **CRASH IN /start:**\n`{str(e)}`\n\n```python\n{traceback.format_exc()}```"
+            delete_timer = parse_timer("FILE_AUTO_DELETE", 1800)
+            m, s = divmod(delete_timer, 60)
+            time_str = f"{m} Minutes {s} Seconds" if s > 0 else f"{m} Minutes"
+
+            warn_text = (
+                f"<b>📢 Please Note\n\n"
+                f"✅ The above file will be autodeleted in {time_str} to avoid copyright issues.\n\n"
+                f"✅ Please forward this file to your saved messages and start downloading from there.\n\n"
+                f"Tᴇᴀᴍ: @KR_Picture</b>"
             )
-        except Exception:
-            pass
+            k = await safe_send_message(
+                client,
+                chat_id=user_id,
+                text=warn_text,
+                reply_to_message_id=msg.id,
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+            if delete_timer > 0:
+                schedule_pm_auto_delete(client, user_id, True, delete_timer, msg, k)
+        except Exception as e:
+            logger.error(f"Auto-delete warning failed to send: {e}")
 
 
-@Client.on_callback_query(
-    filters.regex(
-        r"^(close_data|channels_page#.*|start|help|about|helps_.*|stats|file.*|checksub.*)$"
+@Client.on_callback_query(filters.regex(r"^(file|checksub)"))
+async def file_cb_handler(client: Client, query: CallbackQuery):
+    uid = (
+        query.from_user.id
+        if query.from_user
+        else getattr(query.message.sender_chat, "id", 0)
     )
-)
-async def cb_handler(client: Client, query: CallbackQuery):
-    try:
-        if getattr(info, "REPAIR_MODE", False):
-            if (
-                get_uid(query.message) not in get_admin_list()
-                and query.data != "close_data"
-            ):
-                return await query.answer(
-                    "🛠️ Bot is under maintenance!", show_alert=True
-                )
+    if getattr(info, "REPAIR_MODE", False) and not await is_global_admin(uid):
+        return await safe_answer(query, "🛠️ Bot is under maintenance!", show_alert=True)
 
-        format_vars = SafeDict(
-            mention=query.from_user.mention,
-            first=query.from_user.first_name,
-            first_name=query.from_user.first_name,
-            name=query.from_user.first_name,
-            id=query.from_user.id,
-            uname=temp.U_NAME or "my_bot",
-            bname=temp.B_NAME or "MovieBot",
-            plane_emoji=MESSAGE_EMOJI_PLANE,
-            link_emoji=MESSAGE_EMOJI_LINK,
+    if (
+        query.data.startswith("checksub")
+        and (AUTH_CHANNEL or REQ_CHANNEL)
+        and not await is_subscribed(client, query)
+    ):
+        return await safe_answer(
+            query,
+            "⚠️ Please join our channel first, then click Try Again! Team: @KR_PICTURE",
+            show_alert=True,
         )
 
-        if query.data == "close_data":
-            await query.message.delete()
-        elif query.data.startswith("channels_page#"):
-            page_num = int(query.data.split("#")[1])
-            try:
-                text, reply_markup = await get_channels_page(client, page=page_num)
-                await query.message.edit_text(
-                    text=text,
-                    reply_markup=reply_markup,
-                    disable_web_page_preview=True,
-                    parse_mode=enums.ParseMode.HTML,
-                )
-            except Exception:
-                pass
-            await query.answer()
-        elif query.data == "start":
-            await query.answer()
-            ui = (await get_ui()) or {}
-            raw_text = (
-                ui.get("start_text") or getattr(script, "START_TXT", "Welcome")
-            ).format_map(format_vars)
-            final_text, final_keyboard = parse_text_and_markup(
-                raw_text, await get_start_keyboard(query.from_user.id)
-            )
-            await transition_ui_message(
-                client, query.message, final_text, final_keyboard, ui.get("start_img")
-            )
-        elif query.data == "help":
-            await query.answer()
-            ui = (await get_ui()) or {}
-            raw_text = (
-                ui.get("help_text") or getattr(script, "HELP_TXT", "Help")
-            ).format_map(format_vars)
-            final_text, final_keyboard = parse_text_and_markup(
-                raw_text, await get_help_keyboard()
-            )
-            await transition_ui_message(
-                client, query.message, final_text, final_keyboard, ui.get("help_img")
-            )
-        elif query.data == "about":
-            await query.answer()
-            ui = (await get_ui()) or {}
-            raw_text = (
-                ui.get("about_text") or getattr(script, "ABOUT_TXT", "About")
-            ).format_map(format_vars)
-            final_text, final_keyboard = parse_text_and_markup(
-                raw_text,
-                InlineKeyboardMarkup(
-                    [
-                        [create_btn("Sᴛᴀᴛᴜs ​", callback_data="stats")],
-                        [
-                            create_btn(
-                                "🏘 Hᴏᴍᴇ", callback_data="start", style=BTN_SUCCESS
-                            ),
-                            create_btn(
-                                "🔐 Cʟᴏsᴇ", callback_data="close_data", style=BTN_DANGER
-                            ),
-                        ],
-                    ]
-                ),
-            )
-            await transition_ui_message(
-                client, query.message, final_text, final_keyboard, ui.get("about_img")
-            )
-        elif query.data.startswith("helps_"):
-            await query.answer()
-            buttons = [[create_btn("🔙 Back", callback_data="help")]]
-            help_dict = {
-                "helps_uistart": ("UISTART_TXT", "🎨 UI Start Menu"),
-                "helps_uihelp": ("UIHELP_TXT", "🎨 UI Help Menu"),
-                "helps_uiabout": ("UIABOUT_TXT", "🎨 UI About Menu"),
-                "helps_welcome": ("WELCOME_TXT", "👋 Welcome Help"),
-                "helps_images": ("IMAGES_TXT", "🖼️ Images Help"),
-                "helps_spell": ("SPELLCHECK_TXT", "🔍 Spell Check Help"),
-                "helps_filters": ("FILTERS_TXT", "📝 Filters Help"),
-                "helps_forcesub": ("FORCESUB_TXT", "📱 Force Sub Help"),
-                "helps_forceadd": ("FORCEADD_TXT", "👥 Force Add Help"),
-                "helps_bans": ("BANS_TXT", "🚫 Bans Help"),
-                "helps_delete": ("DELETE_TXT", "🗑 Delete Help"),
-                "helps_promotions": ("PROMOTIONS_TXT", "📢 Promotions Help"),
-                "helps_index": ("INDEX_TXT", "📚 Index Help"),
-                "helps_settings": ("SETTINGS_TXT", "⚙️ Settings Help"),
-                "helps_connections": ("CONNECTIONS_TXT", "🌐 Connections Help"),
-                "helps_utilities": ("UTILITIES_TXT", "📊 Utilities Help"),
-                "helps_custommessages": ("CUSTOMMESSAGES_TXT", "💬 Custom Messages"),
-                "helps_posthand": ("POSTHAND_TXT", "📝 Post Handle Help"),
-                "helps_customcaption": ("CUSTOMCAPTION_TXT", "📝 Custom Captions Help"),
-                "helps_backup": ("BACKUP_TXT", "💾 Backup Help"),
-                "helps_autopost": ("AUTOPOST_TXT", "🧬 Auto Post Help"),
-                "helps_pmautoreply": ("PMAUTOREPLY_TXT", "💬 PM Auto Reply Help"),
-            }
-            target_var, default_text = help_dict.get(
-                query.data, ("HELP_TXT", "Help unavailable.")
-            )
-            text = getattr(script, target_var, default_text)
-            try:
-                if (
-                    getattr(query.message, "photo", None)
-                    or getattr(query.message, "video", None)
-                    or getattr(query.message, "animation", None)
-                    or getattr(query.message, "document", None)
-                ):
-                    await query.message.edit_caption(
-                        caption=text,
-                        reply_markup=InlineKeyboardMarkup(buttons),
-                        parse_mode=enums.ParseMode.HTML,
-                    )
-                else:
-                    await query.message.edit_text(
-                        text=text,
-                        reply_markup=InlineKeyboardMarkup(buttons),
-                        parse_mode=enums.ParseMode.HTML,
-                    )
-            except MessageNotModified:
-                pass
-            except Exception:
-                clean_text = re.sub(
-                    r"</?(b|i|u|s|code|pre|a|blockquote)[^>]*>", "", text
-                )
-                try:
-                    if (
-                        getattr(query.message, "photo", None)
-                        or getattr(query.message, "video", None)
-                        or getattr(query.message, "animation", None)
-                        or getattr(query.message, "document", None)
-                    ):
-                        await query.message.edit_caption(
-                            caption=clean_text,
-                            reply_markup=InlineKeyboardMarkup(buttons),
-                            parse_mode=enums.ParseMode.DISABLED,
-                        )
-                    else:
-                        await query.message.edit_text(
-                            text=clean_text,
-                            reply_markup=InlineKeyboardMarkup(buttons),
-                            parse_mode=enums.ParseMode.DISABLED,
-                        )
-                except Exception:
-                    pass
-        elif query.data.startswith("file") or query.data.startswith("checksub"):
-            if query.data.startswith("checksub"):
-                if (
-                    getattr(info, "AUTH_CHANNEL", None)
-                    or getattr(info, "REQ_CHANNEL", None)
-                ) and not await is_subscribed(client, query):
-                    return await query.answer(
-                        "Search Your Self In The Group. Team: @KR_PICTURE",
-                        show_alert=True,
-                    )
-            try:
-                ident, file_id = query.data.split("#")
-            except ValueError:
-                return await query.answer("Invalid button data!", show_alert=True)
+    try:
+        ident, file_id = query.data.split("#", 1)
+    except ValueError:
+        return await safe_answer(query, "⚠️ Invalid button data!", show_alert=True)
 
-            files_ = await get_file_details(file_id)
-            if not files_:
-                return await query.answer("No such file exist.", show_alert=True)
+    await send_requested_file(
+        client=client,
+        user_id=query.from_user.id,
+        file_id=file_id,
+        ident=ident,
+        query=query,
+    )
 
-            files = files_[0]
-            title = str(
-                files.get("file_name", "Unknown")
-                if isinstance(files, dict)
-                else getattr(files, "file_name", "Unknown")
+
+# ============================================================
+# ⚙️ CLEAN FILENAME COMMANDS (ADMIN ONLY)
+# ============================================================
+@Client.on_message(
+    filters.command(["listcleanfilename", "cleanfilenames", "cleanwords"])
+    & filters.incoming,
+    group=-2,
+)
+async def list_clean_words_cmd(client: Client, message: Message):
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+    if not await is_global_admin(uid):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    text, markup = await build_cleanwords_panel_ui()
+    await safe_reply_text(
+        message,
+        text,
+        reply_markup=markup,
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("setcleanfilename") & filters.incoming, group=-2)
+async def set_clean_words(client: Client, message: Message):
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+    if not await is_global_admin(uid):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    if len(message.command) < 2:
+        text, markup = await build_cleanwords_panel_ui()
+        return await safe_reply_text(
+            message,
+            "⚠️ <b>Usage:</b> <code>/setcleanfilename word1, word2, @ChannelName</code>\n\n"
+            + text,
+            reply_markup=markup,
+            parse_mode=enums.ParseMode.HTML,
+        )
+    words_list = [
+        w.strip() for w in message.text.split(None, 1)[1].split(",") if w.strip()
+    ]
+    if cw_db is not None:
+        await cw_db.update_one(
+            {"id": "words"},
+            {"$set": {"list": words_list, "use_default": False}},
+            upsert=True,
+        )
+        _invalidate_pm_filter_clean_cache()
+        text, markup = await build_cleanwords_panel_ui()
+        await safe_reply_text(
+            message,
+            f"✅ <b>Clean Words Updated Successfully!</b>\n\n{text}",
+            reply_markup=markup,
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+
+@Client.on_message(filters.command("defaultcleanfilename") & filters.incoming, group=-2)
+async def default_clean_words(client: Client, message: Message):
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+    if not await is_global_admin(uid):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    if cw_db is not None:
+        await cw_db.update_one(
+            {"id": "words"}, {"$set": {"use_default": True}}, upsert=True
+        )
+        _invalidate_pm_filter_clean_cache()
+        text, markup = await build_cleanwords_panel_ui()
+        await safe_reply_text(
+            message,
+            f"✅ <b>Reverted to Default Clean Words!</b>\n\n{text}",
+            reply_markup=markup,
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+
+@Client.on_message(filters.command("remcleanfilename") & filters.incoming, group=-2)
+async def rem_clean_words(client: Client, message: Message):
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+    if not await is_global_admin(uid):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    if cw_db is not None:
+        await cw_db.update_one(
+            {"id": "words"}, {"$set": {"list": [], "use_default": False}}, upsert=True
+        )
+        _invalidate_pm_filter_clean_cache()
+        text, markup = await build_cleanwords_panel_ui()
+        await safe_reply_text(
+            message,
+            f"🗑️ <b>All Clean Words Removed!</b>\n\n{text}",
+            reply_markup=markup,
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+
+# ============================================================
+# ⚙️ PM REPLY SETTINGS SETUP COMMANDS (ADMIN ONLY)
+# ============================================================
+@Client.on_message(filters.command("setpmtext") & filters.incoming, group=-2)
+async def set_pm_text(client: Client, message: Message):
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+    if not await is_global_admin(uid):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    try:
+        text = get_html_text(message)
+        if not text:
+            return await safe_reply_text(
+                message,
+                "⚙️ <b>Usage:</b> <code>/setpmtext Your Text Here</code> or reply to a message.",
+                parse_mode=enums.ParseMode.HTML,
             )
-            size = get_size(
-                int(
-                    files.get("file_size", 0)
-                    if isinstance(files, dict)
-                    else getattr(files, "file_size", 0)
-                )
-            )
-            f_caption = str(
-                files.get("caption", "")
-                if isinstance(files, dict)
-                else getattr(files, "caption", "")
-            )
-
-            if getattr(info, "CUSTOM_FILE_CAPTION", None):
-                try:
-                    f_caption = info.CUSTOM_FILE_CAPTION.format(
-                        file_name="" if title == "Unknown" else title,
-                        file_size="" if size == "0B" else size,
-                        file_caption="" if not f_caption else f_caption,
-                    )
-                except Exception:
-                    pass
-            if not f_caption:
-                f_caption = f"<b>{title}</b>"
-            final_caption, final_keyboard = parse_text_and_markup(f_caption, None)
-
-            await query.answer()
-            m = None
-            try:
-                m = await client.send_cached_media(
-                    chat_id=query.from_user.id,
-                    file_id=file_id,
-                    caption=final_caption,
-                    reply_markup=final_keyboard,
-                    protect_content=True if ident in ["filep", "checksubp"] else False,
-                    parse_mode=enums.ParseMode.HTML,
-                )
-            except FloodWait as e:
-                await asyncio.sleep(e.value + 1)
-                m = await client.send_cached_media(
-                    chat_id=query.from_user.id,
-                    file_id=file_id,
-                    caption=final_caption,
-                    reply_markup=final_keyboard,
-                    protect_content=True if ident in ["filep", "checksubp"] else False,
-                    parse_mode=enums.ParseMode.HTML,
-                )
-            except Exception:
-                try:
-                    m = await client.send_document(
-                        chat_id=query.from_user.id,
-                        document=file_id,
-                        caption=final_caption,
-                        reply_markup=final_keyboard,
-                        protect_content=(
-                            True if ident in ["filep", "checksubp"] else False
-                        ),
-                        parse_mode=enums.ParseMode.HTML,
-                    )
-                except Exception:
-                    pass
-
-            if m:
-                try:
-                    delete_timer = parse_timer("FILE_AUTO_DELETE", 1800)
-                    if delete_timer > 0:
-                        min_, sec_ = divmod(delete_timer, 60)
-                        time_str = (
-                            f"{min_} Minutes {sec_} Seconds"
-                            if sec_ > 0
-                            else f"{min_} Minutes"
-                        )
-                        k = await client.send_message(
-                            chat_id=query.from_user.id,
-                            text=f"<b>📢 Please Note\n\n✅ The above file will be autodeleted in {time_str} to avoid copyright issues.\n\n✅ Please forward this file to your saved messages and start downloading from there.\n\nTᴇᴀᴍ: @KR_Picture</b>",
-                            reply_to_message_id=m.id,
-                            parse_mode=enums.ParseMode.HTML,
-                        )
-                        task = asyncio.create_task(
-                            live_text_auto_delete(client, m, k, delete_timer)
-                        )
-                        AUTO_DELETE_TASKS.add(task)
-                        task.add_done_callback(AUTO_DELETE_TASKS.discard)
-                except Exception:
-                    pass
+        await save_pm_settings("text", text)
+        await safe_reply_text(
+            message,
+            f"✅ <b>PM Text updated successfully to:</b>\n\n{text}",
+            parse_mode=enums.ParseMode.HTML,
+        )
     except Exception as e:
-        try:
-            await query.message.reply_text(
-                f"❌ **CALLBACK CRASH:**\n`{str(e)}`\n\n```python\n{traceback.format_exc()}```"
+        await safe_reply_text(message, f"⚠️ Error: {e}")
+
+
+@Client.on_message(filters.command("rempmtext") & filters.incoming, group=-2)
+async def rem_pm_text(client: Client, message: Message):
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+    if not await is_global_admin(uid):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    await save_pm_settings(
+        "text",
+        "<b>🚫 Don't Message Here, Message Here Only!</b>\n\nI do not respond to direct messages in PM. Please join our official group to request and download movies.",
+    )
+    await safe_reply_text(
+        message,
+        "✅ <b>PM Text reset to default.</b>",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(filters.command("setpmimage") & filters.incoming, group=-2)
+async def set_pm_image(client: Client, message: Message):
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+    if not await is_global_admin(uid):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        return await safe_reply_text(
+            message,
+            "⚙️ <b>Usage:</b> Reply to a photo with <code>/setpmimage</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    status = await safe_reply_text(
+        message, "⏳ <b>Uploading to Cloud...</b>", parse_mode=enums.ParseMode.HTML
+    )
+    url = await upload_image_safely(client, message.reply_to_message)
+    if url:
+        await save_pm_settings("image", url)
+        if status:
+            await safe_edit_text(
+                status,
+                "✅ <b>PM Image updated successfully!</b>",
+                parse_mode=enums.ParseMode.HTML,
             )
-        except Exception:
-            pass
+    else:
+        file_id = message.reply_to_message.photo.file_id
+        await save_pm_settings("image", file_id)
+        if status:
+            await safe_edit_text(
+                status,
+                "⚠️ Cloud upload failed. <b>PM Image saved using Telegram File_ID!</b>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+
+@Client.on_message(filters.command("rempmimage") & filters.incoming, group=-2)
+async def rem_pm_image(client: Client, message: Message):
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+    if not await is_global_admin(uid):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    await save_pm_settings("image", None)
+    await safe_reply_text(
+        message, "✅ <b>PM Image removed.</b>", parse_mode=enums.ParseMode.HTML
+    )
+
+
+@Client.on_message(filters.command("setpmbutton") & filters.incoming, group=-2)
+async def set_pm_button(client: Client, message: Message):
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+    if not await is_global_admin(uid):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    try:
+        if len(message.command) < 2:
+            return await safe_reply_text(
+                message,
+                "⚙️ <b>Usage:</b> <code>/setpmbutton Text | URL | Color</code>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        args = message.text.split(None, 1)[1].split("|")
+        if len(args) < 2:
+            return await safe_reply_text(
+                message,
+                "❌ Invalid format. Use: <code>Text | URL | Color</code>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        btn_text, btn_url = args[0].strip(), args[1].strip()
+        btn_color = args[2].strip().lower() if len(args) > 2 else "normal"
+        if btn_color not in ["green", "red", "blue", "normal"]:
+            btn_color = "normal"
+
+        await save_pm_settings("button_text", btn_text)
+        await save_pm_settings("button_url", btn_url)
+        await save_pm_settings("button_color", btn_color)
+        await safe_reply_text(
+            message,
+            f"✅ <b>PM Button updated!</b>\n<b>Text:</b> {btn_text}\n<b>URL:</b> {btn_url}\n<b>Color:</b> {btn_color}",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    except Exception as e:
+        await safe_reply_text(message, f"⚠️ Error: {e}")
+
+
+@Client.on_message(filters.command("rempmbutton") & filters.incoming, group=-2)
+async def rem_pm_button(client: Client, message: Message):
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+    if not await is_global_admin(uid):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    await save_pm_settings("button_text", None)
+    await save_pm_settings("button_url", None)
+    await safe_reply_text(
+        message,
+        "✅ <b>PM Button removed completely.</b>",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@Client.on_message(
+    filters.command(["pmautoreply", "pmreply"]) & filters.incoming, group=-2
+)
+async def toggle_pm_autoreply_cmd(client: Client, message: Message):
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+    if not await is_global_admin(uid):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    settings = await get_pm_settings()
+    cur = bool(settings.get("enabled", True))
+    if len(message.command) > 1:
+        arg = message.command[1].strip().lower()
+        new_val = (
+            True
+            if arg in ["on", "enable", "true", "1", "yes"]
+            else False if arg in ["off", "disable", "false", "0", "no"] else (not cur)
+        )
+    else:
+        new_val = not cur
+
+    await save_pm_settings("enabled", new_val)
+    text, markup = await build_interactive_help_section(
+        client,
+        "helps_pmautoreply",
+        uid,
+        message.from_user.mention if message.from_user else "Admin",
+        message,
+    )
+    await safe_reply_text(
+        message,
+        text,
+        reply_markup=markup,
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+# ============================================================
+# ⚙️ CHANNELS & LEAVE COMMANDS (ADMIN ONLY)
+# ============================================================
+@Client.on_message(filters.command(["channels", "channel"]) & filters.incoming)
+async def list_all_channels_cmd(client: Client, message: Message):
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+    if not await is_global_admin(uid):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    status_msg = await safe_reply_text(message, "⏳ Generating link database...")
+    text, reply_markup = await get_channels_page(client, page=1)
+    if status_msg:
+        await safe_edit_text(
+            status_msg,
+            text,
+            reply_markup=reply_markup,
+            disable_web_page_preview=True,
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+
+@Client.on_message(filters.command(["leavechannel", "leave"]) & filters.incoming)
+async def leave_channel_cmd(client: Client, message: Message):
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+    if not await is_global_admin(uid):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    if len(message.command) < 2:
+        return await safe_reply_text(
+            message,
+            "⚙️ <b>Usage:</b> <code>/leavechannel &lt;channel_id&gt;</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    try:
+        chat_id_int = int(message.command[1].strip())
+    except ValueError:
+        return await safe_reply_text(message, "❌ Invalid Channel ID format.")
+
+    chat_title, tg_status, db_status = (
+        "Unknown Chat",
+        "⚠️ Not inside chat",
+        "⚠️ Not inside DB",
+    )
+    try:
+        chat = await client.get_chat(chat_id_int)
+        chat_title = chat.title or "Unknown"
+        await client.leave_chat(chat_id_int)
+        tg_status = "✅ Successfully left chat."
+    except Exception as e:
+        tg_status = f"⚠️ Could not leave Telegram chat: {e}"
+
+    try:
+        if hasattr(_db, "delete_chat"):
+            await _db.delete_chat(chat_id_int)
+        elif hasattr(_db, "grp"):
+            await _db.grp.delete_one({"id": chat_id_int})
+            await _db.grp.delete_one({"chat_id": chat_id_int})
+        db_status = "✅ Removed from Database."
+    except Exception as e:
+        db_status = f"❌ DB Remove Error: {e}"
+
+    await safe_reply_text(
+        message,
+        f"🎯 <b>Operation Complete:</b>\n\n"
+        f"<b>Name:</b> {chat_title}\n"
+        f"<b>ID:</b> <code>{chat_id_int}</code>\n\n"
+        f"<b>Telegram Status:</b> {tg_status}\n"
+        f"<b>Database Status:</b> {db_status}",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+# ============================================================
+# 📩 PM AUTO-REPLY ENGINE
+# ============================================================
+@Client.on_message(
+    filters.private & filters.incoming & ~filters.bot & ~filters.service,
+    group=1,
+)
+async def pm_auto_reply(client: Client, message: Message):
+    raw_txt = (message.text or message.caption or "").strip()
+    if raw_txt.startswith("/"):
+        return
+
+    if is_waiting_for_cmd_input(message.chat.id):
+        return
+
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+
+    if getattr(info, "REPAIR_MODE", False) and not await is_global_admin(uid):
+        return
+    if message.from_user and await is_user_banned(uid):
+        return
+
+    settings = await get_pm_settings()
+    if not settings.get("enabled", True):
+        return
+
+    if await is_global_admin(uid):
+        if message.forward_from_chat or getattr(message, "forward_origin", None):
+            return
+        if message.document or message.video or message.audio:
+            return
+        if not settings.get("reply_admins", True):
+            return
+
+    text = settings.get("text", "<b>🚫 Don't Message Here, Message Here Only!</b>")
+    pm_img = settings.get("image", getattr(info, "NOT_FOUND_IMG", None))
+    btn_text = settings.get("button_text", "💬 Message Here Only")
+    btn_url = settings.get("button_url", "https://t.me/Sandalwood_Kannada_Group")
+    btn_color_str = str(settings.get("button_color", "red")).lower()
+
+    default_markup = get_pm_autoreply_keyboard(btn_text, btn_url, btn_color_str)
+
+    final_text, final_markup = safe_parse_text_and_markup(text, default_markup)
+    final_text = final_text or text
+
+    try:
+        if pm_img and str(pm_img).lower() != "none" and len(final_text) <= 1024:
+            try:
+                await message.reply_photo(
+                    photo=pm_img,
+                    caption=final_text,
+                    reply_markup=final_markup,
+                    parse_mode=enums.ParseMode.HTML,
+                )
+                return
+            except Exception:
+                pass
+        await safe_reply_text(
+            message,
+            text=final_text,
+            reply_markup=final_markup,
+            parse_mode=enums.ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        logger.error(f"PM Reply Error: {e}")
