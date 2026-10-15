@@ -5,12 +5,7 @@ from logging import ERROR, getLogger
 from typing import List, Optional
 
 from pyrogram import Client, StopPropagation, enums, filters
-from pyrogram.errors import (
-    ChatWriteForbidden,
-    Forbidden,
-    PeerIdInvalid,
-    UserIsBlocked,
-)
+from pyrogram.errors import ChatWriteForbidden, Forbidden, PeerIdInvalid, UserIsBlocked
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import info
