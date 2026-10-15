@@ -705,7 +705,11 @@ async def leave_channel_cmd(client: Client, message: Message):
 # 📄 EXPORT COMMANDS (/exportusers, /exportgroups, /exportchannels)
 # ============================================================
 async def _send_export_document(
-    message: Message, status_msg: Optional[Message], content: str, filename: str, caption: str
+    message: Message,
+    status_msg: Optional[Message],
+    content: str,
+    filename: str,
+    caption: str,
 ):
     bio = io.BytesIO(content.encode("utf-8", errors="replace"))
     bio.name = filename
