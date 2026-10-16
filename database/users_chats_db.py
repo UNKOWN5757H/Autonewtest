@@ -84,11 +84,7 @@ class Database:
         uid = int(user_id)
         await self.col.update_one(
             {"id": uid},
-            {
-                "$set": {
-                    "ban_status": dict(is_banned=True, ban_reason=str(ban_reason))
-                }
-            },
+            {"$set": {"ban_status": dict(is_banned=True, ban_reason=str(ban_reason))}},
             upsert=True,
         )
 
@@ -133,9 +129,7 @@ class Database:
             upsert=True,
         )
 
-    async def disable_chat(
-        self, chat: Union[int, str], reason: str = "No Reason"
-    ):
+    async def disable_chat(self, chat: Union[int, str], reason: str = "No Reason"):
         cid = int(chat)
         await self.grp.update_one(
             {"id": cid},
@@ -163,9 +157,7 @@ class Database:
                 c["reason"] = chat_status["reason"]
         return chats
 
-    async def update_settings(
-        self, id: Union[int, str], settings: Dict[str, Any]
-    ):
+    async def update_settings(self, id: Union[int, str], settings: Dict[str, Any]):
         cid = int(id)
         await self.grp.update_one(
             {"id": cid},
@@ -209,9 +201,7 @@ class Database:
             {"id": int(bot_id)}, {"$set": {setting_name: value}}, upsert=True
         )
 
-    async def update_movie_update_status(
-        self, bot_id: Union[int, str], enable: bool
-    ):
+    async def update_movie_update_status(self, bot_id: Union[int, str], enable: bool):
         await self.update_bot_setting(bot_id, "MOVIE_UPDATE_NOTIFICATION", enable)
 
 
