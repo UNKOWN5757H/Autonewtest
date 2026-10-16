@@ -4,7 +4,6 @@ import re
 import time
 from struct import pack, unpack
 
-from marshmallow.exceptions import ValidationError
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import BulkWriteError, DuplicateKeyError
 from pyrogram.file_id import FileId, FileType
@@ -39,6 +38,8 @@ class SimpleCache:
         return None
 
     def set(self, key, data):
+        if len(self.cache) > 3000:
+            self.cache.clear()
         self.cache[key] = {"time": time.time(), "data": data}
 
 
@@ -61,7 +62,7 @@ def add_to_vocab(file_name):
 
 
 def encode_file_id(s_pack, file_ref):
-    """⚡ FIXED: Reconstructs valid Pyrogram V2 File IDs from truncated database chunks."""
+    """Reconstructs valid Pyrogram V2 File IDs from truncated database chunks."""
     try:
         s_unpack = unpack(
             "<iiqq", base64.urlsafe_b64decode(s_pack + "=" * (-len(s_pack) % 4))
@@ -105,11 +106,11 @@ class Media(Document):
 
 
 class SafeMediaWrapper:
-    """⚡ FIXED: Impervious wrapper for Dictionary vs Object MongoDB outputs."""
+    """Impervious wrapper supporting both Object attribute and Dictionary access."""
 
     def __init__(self, data):
         self._id = data.get("_id")
-        self.file_id = self._id  # Keep short for the start= URL
+        self.file_id = self._id
         self.file_ref = data.get("file_ref", "")
         self.file_name = data.get("file_name", "")
         self.file_size = data.get("file_size", 0)
@@ -117,7 +118,6 @@ class SafeMediaWrapper:
         self.mime_type = data.get("mime_type")
         self.caption = data.get("caption")
 
-        # Pull original if saved, otherwise dynamically reconstruct Pyrogram V2 FileID
         raw = data.get("file_id_raw")
         if raw:
             self.full_file_id = raw
@@ -125,6 +125,12 @@ class SafeMediaWrapper:
             self.full_file_id = (
                 encode_file_id(self._id, self.file_ref) if self.file_ref else self._id
             )
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def __getitem__(self, key):
+        return getattr(self, key)
 
 
 async def get_search_results(
@@ -217,7 +223,7 @@ async def get_search_results(
                     search_cache.set(cache_key, corrected)
                 return corrected
 
-    next_offset = offset + max_results if offset + max_results <= total_results else ""
+    next_offset = offset + max_results if offset + max_results < total_results else 0
     files = (
         await db[COLLECTION_NAME]
         .find(mongo_query)
@@ -231,6 +237,38 @@ async def get_search_results(
     if total_results > 0:
         search_cache.set(cache_key, result)
     return result
+
+
+async def save_file(media):
+    """Saves a single media object into MongoDB and returns (saved_bool, status_code)."""
+    try:
+        file_id, file_ref = unpack_new_file_id(media.file_id)
+        file_name = re.sub(
+            r"[_\-\.\+]", " ", str(getattr(media, "file_name", "") or "File")
+        )
+        add_to_vocab(file_name)
+        doc = {
+            "_id": file_id,
+            "file_ref": file_ref,
+            "file_name": file_name,
+            "file_size": getattr(media, "file_size", 0) or 0,
+            "file_type": getattr(media, "file_type", None),
+            "mime_type": getattr(media, "mime_type", None),
+            "caption": (
+                str(getattr(media, "caption", None))
+                if getattr(media, "caption", None)
+                else None
+            ),
+            "file_id_raw": getattr(media, "file_id", None),
+        }
+        await db[COLLECTION_NAME].insert_one(doc)
+        search_cache.cache.clear()
+        return True, 1
+    except DuplicateKeyError:
+        return False, 0
+    except Exception as e:
+        logger.error(f"save_file error: {e}")
+        return False, 2
 
 
 async def save_batch(media_list):
@@ -257,9 +295,7 @@ async def save_batch(media_list):
                         if getattr(media, "caption", None)
                         else None
                     ),
-                    "file_id_raw": getattr(
-                        media, "file_id", None
-                    ),  # ⚡ FIXED: Saves raw string to prevent V2 crashes
+                    "file_id_raw": getattr(media, "file_id", None),
                 }
             )
         except Exception:
@@ -269,8 +305,10 @@ async def save_batch(media_list):
         return 0, 0, len(media_list)
     try:
         res = await db[COLLECTION_NAME].insert_many(documents, ordered=False)
+        search_cache.cache.clear()
         return len(res.inserted_ids), 0, 0
     except BulkWriteError as bwe:
+        search_cache.cache.clear()
         inserted = bwe.details.get("nInserted", 0)
         duplicates = sum(
             1 for err in bwe.details.get("writeErrors", []) if err["code"] == 11000
@@ -279,12 +317,12 @@ async def save_batch(media_list):
 
 
 async def get_file_details(query):
-    """⚡ FIXED: Identifies truncated Telegram URLs and recovers the full file via regex!"""
+    """Identifies truncated Telegram URLs and recovers the full file via regex."""
     res = await db[COLLECTION_NAME].find({"_id": query}).to_list(length=1)
-    if not res and len(query) >= 20:
+    if not res and len(str(query)) >= 20:
         res = (
             await db[COLLECTION_NAME]
-            .find({"_id": {"$regex": f"^{re.escape(query)}"}})
+            .find({"_id": {"$regex": f"^{re.escape(str(query))}"}})
             .to_list(length=1)
         )
     return [SafeMediaWrapper(f) for f in res]
