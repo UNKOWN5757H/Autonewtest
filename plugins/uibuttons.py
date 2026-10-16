@@ -2,6 +2,7 @@ import asyncio
 import builtins
 import copy
 import html
+import importlib
 import inspect
 import math
 import random
@@ -118,6 +119,157 @@ HELP_SHORTCUT_MAP: Dict[str, str] = {
     "customcaptions": "helps_customcaption",
     "backups": "helps_backup",
     "posthand": "helps_posthand",
+}
+
+# ============================================================
+# 🎯 DIRECT PLUGIN FUNCTION ROUTING TABLE (ZERO SILENT FAILURES)
+# ============================================================
+_DIRECT_CMD_ROUTES: Dict[str, Tuple[str, str]] = {
+    # UI Start / Help / About (plugins/editable.py)
+    "setstarttext": ("plugins.editable", "set_start_text"),
+    "defaultstarttext": ("plugins.editable", "def_start_text"),
+    "setstartimage": ("plugins.editable", "set_start_img"),
+    "remstartimage": ("plugins.editable", "rem_start_img"),
+    "addstartbutton": ("plugins.editable", "add_start_btn"),
+    "editstartbuttons": ("plugins.editable", "edit_start_btn"),
+    "remstartbutton": ("plugins.editable", "rem_start_btn"),
+    "sethelptext": ("plugins.editable", "set_help_text"),
+    "defaulthelptext": ("plugins.editable", "def_help_text"),
+    "sethelpimage": ("plugins.editable", "set_help_img"),
+    "remhelpimage": ("plugins.editable", "rem_help_img"),
+    "addhelpbutton": ("plugins.editable", "add_help_btn"),
+    "edithelpbuttons": ("plugins.editable", "edit_help_btn"),
+    "remhelpbutton": ("plugins.editable", "rem_help_btn"),
+    "setabouttext": ("plugins.editable", "set_about_text"),
+    "defaultabouttext": ("plugins.editable", "def_about_text"),
+    "setaboutimage": ("plugins.editable", "set_about_img"),
+    "remaboutimage": ("plugins.editable", "rem_about_img"),
+    "addaboutbutton": ("plugins.editable", "add_about_btn"),
+    "editaboutbuttons": ("plugins.editable", "edit_about_btn"),
+    "remaboutbutton": ("plugins.editable", "rem_about_btn"),
+    # Welcome & Global Images & Stopwords (plugins/custom_settings.py)
+    "enablewelcome": ("plugins.custom_settings", "enable_welc"),
+    "disablewelcome": ("plugins.custom_settings", "disable_welc"),
+    "setwelcometxt": ("plugins.custom_settings", "set_welc_txt"),
+    "setwelcomeimg": ("plugins.custom_settings", "set_welc_img"),
+    "setwelcome": ("plugins.custom_settings", "set_welcome_both"),
+    "delwelcome": ("plugins.custom_settings", "del_welcome"),
+    "setautoimg": ("plugins.custom_settings", "set_auto_img"),
+    "remautoimg": ("plugins.custom_settings", "rem_auto_img"),
+    "setfilenotfoundimg": ("plugins.custom_settings", "set_fnf_img"),
+    "remfilenotfoundimg": ("plugins.custom_settings", "rem_fnf_img"),
+    "defaultfilenotfoundimg": ("plugins.custom_settings", "default_fnf_img"),
+    "setfsubimg": ("plugins.custom_settings", "set_fsub_img"),
+    "addstopwords": ("plugins.custom_settings", "add_stopwords"),
+    "stopwords": ("plugins.custom_settings", "show_stopwords"),
+    "remstopwords": ("plugins.custom_settings", "rem_stopwords"),
+    "remallstopwords": ("plugins.custom_settings", "rem_all_stopwords"),
+    "defaultstopwords": ("plugins.custom_settings", "default_stopwords"),
+    "setnotfoundtext": ("plugins.custom_settings", "set_fnf_text"),
+    "remnotfoundtext": ("plugins.custom_settings", "rem_fnf_text"),
+    "defaultnotfoundtext": ("plugins.custom_settings", "def_fnf_text"),
+    # Filters (plugins/pm_filter.py)
+    "filter": ("plugins.pm_filter", "add_filter_cmd"),
+    "addfilter": ("plugins.pm_filter", "add_premade_filter_cmd"),
+    "filterimage": ("plugins.pm_filter", "edit_filter_image_cmd"),
+    "editfiltercolur": ("plugins.pm_filter", "edit_filter_colour_cmd"),
+    "editfiltercolour": ("plugins.pm_filter", "edit_filter_colour_cmd"),
+    "delfilter": ("plugins.pm_filter", "del_filter_cmd"),
+    "listfilters": ("plugins.pm_filter", "list_filters_cmd"),
+    # Force Sub (plugins/fsub.py)
+    "setfsub": ("plugins.fsub", "add_dynamic_fsub"),
+    "rmfsub": ("plugins.fsub", "rem_fsub"),
+    "rmallfsub": ("plugins.fsub", "rem_all_fsub"),
+    "getallfsub": ("plugins.fsub", "get_all_fsub"),
+    "totalrequests": ("plugins.fsub", "total_requests"),
+    "purgerequests": ("plugins.fsub", "purge_requests"),
+    "clearfsubusers": ("plugins.fsub", "clear_fsub_users_cmd"),
+    # Force Add (plugins/force_add.py)
+    "myadds": ("plugins.force_add", "my_adds"),
+    "setforceadd": ("plugins.force_add", "set_force_add"),
+    "remforceadd": ("plugins.force_add", "remove_force_add"),
+    "getforceadd": ("plugins.force_add", "get_force_add"),
+    "topaddall": ("plugins.force_add", "top_add_all"),
+    "topadd24": ("plugins.force_add", "top_add_24"),
+    "topadd7": ("plugins.force_add", "top_add_7"),
+    "resetadddaily": ("plugins.force_add", "reset_add_daily"),
+    "resetadd": ("plugins.force_add", "reset_all_adds"),
+    # Bans, Enable/Disable, Admin Core (plugins/admincore.py & plugins/p_ttishow.py)
+    "ban": ("plugins.admincore", "ban_user_cmd"),
+    "unban": ("plugins.admincore", "unban_user_cmd"),
+    "bannedusers": ("plugins.admincore", "check_banned_users"),
+    "enable": ("plugins.p_ttishow", "enable_chat"),
+    "disable": ("plugins.p_ttishow", "disable_chat"),
+    "leave": ("plugins.channel", "leave_channel_cmd"),
+    "leavechannel": ("plugins.channel", "leave_channel_cmd"),
+    "channels": ("plugins.channel", "channels_dashboard_cmd"),
+    "exportusers": ("plugins.channel", "export_users_cmd"),
+    "exportgroups": ("plugins.channel", "export_groups_cmd"),
+    "exportchannels": ("plugins.channel", "export_channels_cmd"),
+    "connect": ("plugins.admincore", "addconnection_cmd"),
+    "disconnect": ("plugins.admincore", "deleteconnection_cmd"),
+    "connections": ("plugins.admincore", "connections_cmd"),
+    "adminsettings": ("plugins.admincore", "show_admin_settings"),
+    "logs": ("plugins.admincore", "get_logs_cmd"),
+    "server": ("plugins.admincore", "server_stats_cmd"),
+    "stats": ("plugins.admincore", "bot_stats_cmd"),
+    "total": ("plugins.admincore", "bot_stats_cmd"),
+    "optimize_db": ("plugins.admincore", "optimize_db_cmd"),
+    "clearfiles": ("plugins.admincore", "wipe_prompt_cmd"),
+    "clearusers": ("plugins.admincore", "wipe_prompt_cmd"),
+    "cleanusers": ("plugins.admincore", "clean_users_cmd"),
+    # Delete & Auto-Delete (plugins/delete.py)
+    "delete": ("plugins.delete", "delete_single_file"),
+    "delmulti": ("plugins.delete", "delete_multiple_files"),
+    "autodelete": ("plugins.delete", "set_autodelete_timer"),
+    "buttondel": ("plugins.delete", "set_button_autodelete_timer"),
+    "purgeduplicates": ("plugins.delete", "purge_duplicates_cmd"),
+    # Broadcast & Promotions (plugins/broadcast.py)
+    "addpromo": ("plugins.broadcast", "add_promo_handler"),
+    "delpromo": ("plugins.broadcast", "del_promo_handler"),
+    "listpromos": ("plugins.broadcast", "list_promo_handler"),
+    "broadcast": ("plugins.broadcast", "user_broadcast"),
+    "group_broadcast": ("plugins.broadcast", "group_broadcast"),
+    "listbroadcast": ("plugins.broadcast", "list_broadcast_status_cmd"),
+    # Indexing (plugins/index.py)
+    "index": ("plugins.index", "index_command"),
+    "indexdoc": ("plugins.index", "index_command"),
+    "indexvideo": ("plugins.index", "index_command"),
+    "indexaudio": ("plugins.index", "index_command"),
+    "resumeindex": ("plugins.index", "resume_index_command"),
+    "setskip": ("plugins.index", "set_skip_number"),
+    "deleteskip": ("plugins.index", "delete_skip_number"),
+    "currentskip": ("plugins.index", "current_skip_number"),
+    # Custom Messages & Captions (plugins/custommessage.py & plugins/caption.py)
+    "infomsg": ("plugins.custommessage", "set_info_msg"),
+    "infoimg": ("plugins.custommessage", "set_info_img"),
+    "fsubmsg": ("plugins.custommessage", "set_fsub_msg"),
+    "fsubimg": ("plugins.custommessage", "set_fsub_img"),
+    "delmsg": ("plugins.custommessage", "set_del_msg"),
+    "delimg": ("plugins.custommessage", "set_del_img"),
+    "notfoundmsg": ("plugins.custommessage", "set_notfound_msg"),
+    "notfoundimg": ("plugins.custommessage", "set_notfound_img"),
+    "customcaption": ("plugins.caption", "set_file_caption_cmd"),
+    "captionplus": ("plugins.caption", "set_caption_plus_cmd"),
+    # Backup (plugins/backup.py)
+    "dbbackup": ("plugins.backup", "db_backup_cmd"),
+    "dbrestore": ("plugins.backup", "db_restore_cmd"),
+    "dbstats": ("plugins.backup", "db_stats_cmd"),
+    "dbschedule": ("plugins.backup", "db_schedule_cmd"),
+    # Post Handler (plugins/post_handler.py)
+    "post": ("plugins.post_handler", "post_command"),
+    "editpost": ("plugins.post_handler", "edit_post_cmd"),
+    "edittitle": ("plugins.post_handler", "cmd_edit_title"),
+    "edityear": ("plugins.post_handler", "cmd_edit_year"),
+    "editlangs": ("plugins.post_handler", "cmd_edit_langs"),
+    "editresolutions": ("plugins.post_handler", "cmd_edit_res"),
+    "editgenres": ("plugins.post_handler", "cmd_edit_gen"),
+    "editotts": ("plugins.post_handler", "cmd_edit_ott"),
+    "editbutton": ("plugins.post_handler", "cmd_edit_post_button"),
+    "editbuttoncolour": ("plugins.post_handler", "cmd_edit_btn_color"),
+    "editdirect": ("plugins.post_handler", "cmd_edit_post_direct"),
+    "setpoststicker": ("plugins.post_handler", "set_autopost_sticker"),
+    "rempoststicker": ("plugins.post_handler", "rem_autopost_sticker"),
 }
 
 
@@ -2154,7 +2306,7 @@ _CMD_INPUT_PROMPTS: Dict[str, Tuple[str, str]] = {
     ),
     "setforceadd": (
         "helps_forceadd",
-        "👥 <b>Send the required member count or Channel ID for Force Add:</b>",
+        "👥 <b>Send the required member count for Force Add:</b>\nExample: <code>5</code>",
     ),
     "ban": (
         "helps_bans",
@@ -2343,20 +2495,38 @@ _CMD_INPUT_PROMPTS: Dict[str, Tuple[str, str]] = {
 }
 
 
+class _SyntheticText(str):
+    """Preserves .html attribute when user sends formatted HTML/Markdown text."""
+
+    def __new__(cls, value: str, html_val: Optional[str] = None):
+        obj = super().__new__(cls, value)
+        obj.html = html_val if html_val is not None else value
+        obj.markdown = value
+        return obj
+
+
 async def _dispatch_synthetic_command(
     client: Client,
     base_msg: Message,
     user,
     cmd_name: str,
     arg_text: str = "",
+    arg_html: Optional[str] = None,
     reply_msg: Optional[Message] = None,
 ) -> bool:
-    full_text = f"/{cmd_name}" + (f" {arg_text.strip()}" if arg_text.strip() else "")
-    cmd_parts = [cmd_name] + (arg_text.strip().split() if arg_text.strip() else [])
+    clean_arg = arg_text.strip()
+    full_text = f"/{cmd_name}" + (f" {clean_arg}" if clean_arg else "")
+    full_html = f"/{cmd_name}" + (
+        f" {arg_html.strip()}"
+        if arg_html and arg_html.strip()
+        else (f" {clean_arg}" if clean_arg else "")
+    )
+    cmd_parts = [cmd_name] + (clean_arg.split() if clean_arg else [])
 
     try:
         synth_msg = copy.copy(base_msg)
-        synth_msg.text = full_text
+        synth_msg._client = client
+        synth_msg.text = _SyntheticText(full_text, full_html)
         synth_msg.caption = None
         synth_msg.photo = None
         synth_msg.video = None
@@ -2366,6 +2536,7 @@ async def _dispatch_synthetic_command(
         synth_msg.audio = None
         synth_msg.command = cmd_parts
         synth_msg.from_user = user
+        synth_msg.sender_chat = None
         synth_msg.outgoing = False
         if reply_msg is not None:
             synth_msg.reply_to_message = reply_msg
@@ -2373,6 +2544,33 @@ async def _dispatch_synthetic_command(
         logger.error(f"Failed building synthetic message for /{cmd_name}: {e}")
         return False
 
+    # 1. Direct Plugin Route Lookup (Fast, 100% Reliable, Never Silent)
+    route = _DIRECT_CMD_ROUTES.get(cmd_name.lower())
+    if route:
+        mod_path, func_name = route
+        for candidate_mod in (mod_path, mod_path.replace("plugins.", "", 1)):
+            try:
+                mod = importlib.import_module(candidate_mod)
+                handler_fn = getattr(mod, func_name, None)
+                if callable(handler_fn):
+                    await handler_fn(client, synth_msg)
+                    return True
+            except (StopPropagation, ContinuePropagation):
+                return True
+            except ImportError:
+                continue
+            except Exception as e:
+                logger.error(
+                    f"Direct execution error in {mod_path}.{func_name} for /{cmd_name}: {e}"
+                )
+                await safe_reply_text(
+                    base_msg,
+                    f"⚠️ <b>Error running <code>/{cmd_name}</code>:</b>\n<code>{html.escape(str(e))}</code>",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+                return True
+
+    # 2. Fallback Pyrogram Dispatcher Loop
     dispatcher = getattr(client, "dispatcher", None)
     if not dispatcher or not getattr(dispatcher, "groups", None):
         return False
@@ -2508,18 +2706,27 @@ async def _handle_help_cmd_button(client: Client, query: CallbackQuery, cmd_name
             or resp.sticker
             or resp.audio
             or resp.animation
-            or resp.forward_from_chat
+            or getattr(resp, "forward_from_chat", None)
             or getattr(resp, "forward_origin", None)
         )
-        arg_str = (resp.text or resp.caption or "").strip()
+        raw_content = resp.text or resp.caption or ""
+        arg_str = str(raw_content).strip()
+        arg_html = getattr(raw_content, "html", arg_str) if raw_content else ""
 
-        if has_media_or_fwd and arg_str.lower() != "off":
+        # Allow commands like /broadcast or /group_broadcast to use the user's message as reply_to_message
+        needs_reply_obj = has_media_or_fwd or cmd_clean in [
+            "broadcast",
+            "group_broadcast",
+        ]
+
+        if needs_reply_obj and arg_str.lower() != "off":
             handled = await _dispatch_synthetic_command(
                 client,
                 resp,
                 query.from_user,
                 cmd_clean,
-                arg_text=arg_str,
+                arg_text="" if cmd_clean in ["broadcast", "group_broadcast"] else arg_str,
+                arg_html="" if cmd_clean in ["broadcast", "group_broadcast"] else arg_html,
                 reply_msg=resp,
             )
         else:
@@ -2529,10 +2736,20 @@ async def _handle_help_cmd_button(client: Client, query: CallbackQuery, cmd_name
                 query.from_user,
                 cmd_clean,
                 arg_text=arg_str,
+                arg_html=arg_html,
                 reply_msg=None,
             )
 
-        if back_sec in ["helps_uistart", "helps_uihelp", "helps_uiabout"]:
+        if back_sec in [
+            "helps_uistart",
+            "helps_uihelp",
+            "helps_uiabout",
+            "helps_spell",
+            "helps_forcesub",
+            "helps_forceadd",
+            "helps_welcome",
+            "helps_filters",
+        ]:
             text, markup = await build_interactive_help_section(
                 client, back_sec, uid, user_mention, query.message
             )
@@ -2570,6 +2787,12 @@ async def _handle_help_cmd_button(client: Client, query: CallbackQuery, cmd_name
         )
         text, markup = await build_interactive_help_section(
             client, sec, uid, user_mention, query.message
+        )
+        return await transition_ui_message(client, query.message, text, markup)
+
+    if cmd_clean in ["remforceadd", "resetadddaily", "resetadd"]:
+        text, markup = await build_interactive_help_section(
+            client, "helps_forceadd", uid, user_mention, query.message
         )
         return await transition_ui_message(client, query.message, text, markup)
 
