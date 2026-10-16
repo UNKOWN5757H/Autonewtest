@@ -137,9 +137,7 @@ class PluginDatabase:
     # ============================================================
     # 👥 FORCE ADD HELPERS
     # ============================================================
-    async def set_fa_settings(
-        self, chat_id: Union[int, str], limit: int, mode: str
-    ):
+    async def set_fa_settings(self, chat_id: Union[int, str], limit: int, mode: str):
         await self.fa_col.update_one(
             {"_id": f"settings_{int(chat_id)}"},
             {"$set": {"limit": int(limit), "mode": str(mode)}},
@@ -194,9 +192,7 @@ class PluginDatabase:
         user_id: Union[int, str],
         time_limit: Optional[int] = None,
     ) -> int:
-        doc = await self.fa_col.find_one(
-            {"_id": f"adds_{int(chat_id)}_{int(user_id)}"}
-        )
+        doc = await self.fa_col.find_one({"_id": f"adds_{int(chat_id)}_{int(user_id)}"})
         if not doc:
             return 0
         if time_limit is None:
@@ -211,9 +207,7 @@ class PluginDatabase:
         )
 
     async def reset_fa_all_adds(self, chat_id: Union[int, str]):
-        await self.fa_col.delete_many(
-            {"_id": {"$regex": f"^adds_{int(chat_id)}_"}}
-        )
+        await self.fa_col.delete_many({"_id": {"$regex": f"^adds_{int(chat_id)}_"}})
 
     async def get_fa_top_adds(
         self, chat_id: Union[int, str], time_limit: Optional[int] = None
