@@ -43,6 +43,7 @@ try:
         build_cleanwords_panel_ui,
         build_interactive_help_section,
         cw_db,
+        get_clean_words_state,
         get_default_file_keyboard,
         get_deleted_file_notify_keyboard,
         get_pm_autoreply_keyboard,
@@ -60,6 +61,7 @@ except ImportError:
         build_cleanwords_panel_ui,
         build_interactive_help_section,
         cw_db,
+        get_clean_words_state,
         get_default_file_keyboard,
         get_deleted_file_notify_keyboard,
         get_pm_autoreply_keyboard,
@@ -280,7 +282,7 @@ async def auto_delete_all_messages(
 
     if is_pm:
         notify_text = (
-            (dict_del_msg := getattr(info, "DEL_MSG", None))
+            getattr(info, "DEL_MSG", None)
             or "<b>Successfully deleted your file, if you want request again in group.</b>"
         )
         markup = get_deleted_file_notify_keyboard()
@@ -524,7 +526,7 @@ async def file_cb_handler(client: Client, query: CallbackQuery):
 # ⚙️ CLEAN FILENAME COMMANDS (ADMIN ONLY)
 # ============================================================
 @Client.on_message(
-    filters.command(["listcleanfilename", "cleanfilenames", "cleanwords"])
+    filters.command(["listcleanfilename", "cleanfilenames", "cleanwords", "cleanfile"])
     & filters.incoming,
     group=-2,
 )
@@ -548,6 +550,51 @@ async def list_clean_words_cmd(client: Client, message: Message):
         reply_markup=markup,
         parse_mode=enums.ParseMode.HTML,
     )
+
+
+@Client.on_message(filters.command("addcleanfilename") & filters.incoming, group=-2)
+async def add_clean_words_cmd(client: Client, message: Message):
+    uid = (
+        message.from_user.id
+        if message.from_user
+        else getattr(message.sender_chat, "id", 0)
+    )
+    if not await is_global_admin(uid):
+        return await safe_reply_text(
+            message,
+            "❌ <b>Unauthorized:</b> Global Bot Admin only.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    if len(message.command) < 2:
+        text, markup = await build_cleanwords_panel_ui()
+        return await safe_reply_text(
+            message,
+            "⚠️ <b>Usage:</b> <code>/addcleanfilename word1, word2, @ChannelName</code>\n\n"
+            + text,
+            reply_markup=markup,
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    new_words = [
+        w.strip() for w in message.text.split(None, 1)[1].split(",") if w.strip()
+    ]
+    if cw_db is not None and new_words:
+        _, cur_words = await get_clean_words_state()
+        merged = list(dict.fromkeys(cur_words + new_words))
+        await cw_db.update_one(
+            {"id": "words"},
+            {"$set": {"list": merged, "use_default": False}},
+            upsert=True,
+        )
+        _invalidate_pm_filter_clean_cache()
+        text, markup = await build_cleanwords_panel_ui()
+        await safe_reply_text(
+            message,
+            f"✅ <b>Added {len(new_words)} word(s) to Clean Filename Manager!</b>\n\n{text}",
+            reply_markup=markup,
+            parse_mode=enums.ParseMode.HTML,
+        )
 
 
 @Client.on_message(filters.command("setcleanfilename") & filters.incoming, group=-2)
@@ -642,7 +689,7 @@ async def rem_clean_words(client: Client, message: Message):
         text, markup = await build_cleanwords_panel_ui()
         await safe_reply_text(
             message,
-            f"🗑️ <b>All Clean Words Removed!</b>\n\n{text}",
+            f"🗑️ <b>All Custom Clean Words Removed!</b>\n<i>(Note: @words and symbols are still always stripped automatically)</i>\n\n{text}",
             reply_markup=markup,
             parse_mode=enums.ParseMode.HTML,
         )
@@ -921,7 +968,7 @@ async def pm_auto_reply(client: Client, message: Message):
     pm_img = settings.get("image", getattr(info, "NOT_FOUND_IMG", None))
     btn_text = settings.get("button_text", "💬 Message Here Only")
     btn_url = settings.get("button_url", "https://t.me/Sandalwood_Kannada_Group")
-    btn_color_str = str(settings.get("button_color", "red")).lower()
+    btn_color_str = str(settings.get("button_color", "green")).lower()
 
     default_markup = get_pm_autoreply_keyboard(btn_text, btn_url, btn_color_str)
 
