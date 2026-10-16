@@ -1163,9 +1163,7 @@ def _deduplicate_files(files: list, clean_words: list) -> list:
             else getattr(f, "file_name", "")
         )
         fsize = int(
-            f.get("file_size", 0)
-            if isinstance(f, dict)
-            else getattr(f, "file_size", 0)
+            f.get("file_size", 0) if isinstance(f, dict) else getattr(f, "file_size", 0)
         )
         norm_name = _normalize_dedup_name(raw_name, clean_words)
         dedup_key = (norm_name, fsize)
