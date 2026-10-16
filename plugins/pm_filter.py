@@ -609,7 +609,16 @@ try:
 except Exception as e:
     logger.error(f"Failed to init cw_db / pm_feat_db: {e}")
 
-DEFAULT_CLEAN_WORDS = ["sandalwood", "mkv", "mp4", "avi", "webm", "zip", "rar"]
+DEFAULT_CLEAN_WORDS = [
+    "@",
+    "sandalwood",
+    "mkv",
+    "mp4",
+    "avi",
+    "webm",
+    "zip",
+    "rar",
+]
 _CLEAN_WORDS_CACHE: Tuple[float, list] = (0.0, DEFAULT_CLEAN_WORDS)
 _PROMO_CACHE: Tuple[float, List[Dict[str, str]]] = (0.0, [])
 _FEATURE_FLAGS_CACHE: Dict[str, Any] = {
@@ -712,17 +721,43 @@ async def get_active_promos() -> List[Dict[str, str]]:
 
 
 def clean_filename(name: str, clean_words: list) -> str:
+    """
+    Always removes:
+    - Any word starting with '@' (e.g., @Sandalwood_Kannada, [@Channel_Name])
+    - URLs & Telegram links
+    - Custom clean words & default file extensions
+    - All symbols/punctuation while preserving clean alphanumeric + Indic characters
+    """
     if not name:
         return "File"
-    if any(w.lower() in ["mkv", "sandalwood"] for w in clean_words):
-        name = re.sub(r"(?i)\[?@?sandalwood[^\]\s]*\]?", "", name)
-        name = re.sub(r"(?i)\b(sandalwood|mkv|mp4|avi|webm|zip|rar)\b", "", name)
-    name = re.sub(r"[_.-]", " ", name)
+
+    # 1. Always strip URLs and any word starting with '@' (including surrounding brackets)
+    name = re.sub(r"(?i)https?://\S+|t\.me/\S+|www\.\S+", " ", name)
+    name = re.sub(r"[\[\(\{<]*@[a-zA-Z0-9_.\-]+[\]\)\}>]*", " ", name)
+    name = re.sub(r"@\S+", " ", name)
+
+    # 2. Strip default extensions & tags if enabled
+    if any(
+        w.lower() in ["mkv", "sandalwood", "mp4", "avi", "webm", "zip", "rar"]
+        for w in clean_words
+    ):
+        name = re.sub(r"(?i)\[?@?sandalwood[^\]\s]*\]?", " ", name)
+        name = re.sub(r"(?i)\b(sandalwood|mkv|mp4|avi|webm|zip|rar)\b", " ", name)
+
+    # 3. Strip custom configured words/phrases from Clean Filename Words Manager
     for word in clean_words:
-        if word.lower() in ["mkv", "sandalwood", "mp4", "avi", "webm", "zip", "rar"]:
+        w_str = str(word).strip()
+        if not w_str or w_str == "@":
             continue
-        name = re.sub(rf"(?i){re.escape(word)}", "", name)
+        if w_str.lower() in ["mkv", "sandalwood", "mp4", "avi", "webm", "zip", "rar"]:
+            continue
+        name = re.sub(rf"(?i){re.escape(w_str)}", " ", name)
+
+    # 4. Always strip symbols, brackets, and punctuation (keep letters, numbers, and Indic script)
+    name = re.sub(r"[_.\-\+\[\]\(\)\{\}\|~`!#$%^&*=\\/:;\"'<>,?]+", " ", name)
+    name = re.sub(r"[^\w\s\u0900-\u0D7F]", " ", name)
     name = re.sub(r"\s+", " ", name).strip()
+
     return (name[:42] + "..") if len(name) > 45 else (name or "File")
 
 
@@ -1008,7 +1043,7 @@ def build_effective_search_query(base_query: str, state: dict) -> str:
 
 
 # ============================================================
-# 🔮 ULTRA-ACCURATE MULTI-STAGE SEARCH & SUGGESTION ENGINE
+# 🔮 ULTRA-ACCURATE MULTI-STAGE SEARCH, KANNADA PRIORITY & DEDUPLICATION
 # ============================================================
 def sanitize_search_query(text: str, allow_translit: bool = True) -> str:
     if not text:
@@ -1083,7 +1118,77 @@ def _file_text(file_obj) -> str:
     return f"{fname or ''} {fcap or ''}".lower()
 
 
-def _score_file_relevance(file_obj, query_str: str) -> Tuple[int, int]:
+def _is_kannada_file(file_obj) -> bool:
+    """Detects if a file is Kannada via filename/caption tags or Kannada script."""
+    txt = _file_text(file_obj)
+    if LANG_PATTERNS["kan"].search(txt):
+        return True
+    return any(0x0C80 <= ord(ch) <= 0x0CFF for ch in txt)
+
+
+def _normalize_dedup_name(raw_name: str, clean_words: list) -> str:
+    """Normalizes a filename for deduplication (strips @usernames, extensions, symbols, and case)."""
+    s = str(raw_name or "").lower()
+    s = re.sub(r"(?i)https?://\S+|t\.me/\S+|www\.\S+", " ", s)
+    s = re.sub(r"[\[\(\{<]*@[a-zA-Z0-9_.\-]+[\]\)\}>]*", " ", s)
+    s = re.sub(r"@\S+", " ", s)
+    s = re.sub(r"\b(sandalwood|mkv|mp4|avi|webm|zip|rar)\b", " ", s)
+    for word in clean_words:
+        w_str = str(word).strip().lower()
+        if w_str and w_str != "@":
+            s = re.sub(rf"{re.escape(w_str)}", " ", s)
+    s = re.sub(r"[^a-z0-9\u0900-\u0D7F]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _deduplicate_files(files: list, clean_words: list) -> list:
+    """
+    Removes duplicate files that have the same normalized filename AND same file size
+    (or identical file_id).
+    """
+    unique_files = []
+    seen_ids = set()
+    seen_name_size = set()
+
+    for f in files:
+        fid = str(
+            f.get("file_id", "") if isinstance(f, dict) else getattr(f, "file_id", "")
+        )
+        if fid and fid in seen_ids:
+            continue
+
+        raw_name = str(
+            f.get("file_name", "")
+            if isinstance(f, dict)
+            else getattr(f, "file_name", "")
+        )
+        fsize = int(
+            f.get("file_size", 0)
+            if isinstance(f, dict)
+            else getattr(f, "file_size", 0)
+        )
+        norm_name = _normalize_dedup_name(raw_name, clean_words)
+        dedup_key = (norm_name, fsize)
+
+        if norm_name and dedup_key in seen_name_size:
+            continue
+
+        if fid:
+            seen_ids.add(fid)
+        if norm_name:
+            seen_name_size.add(dedup_key)
+        unique_files.append(f)
+
+    return unique_files
+
+
+def _score_file_relevance(file_obj, query_str: str) -> Tuple[int, int, int]:
+    """
+    Scores files so that:
+    1. Exact/matching movie title with KANNADA language always appears FIRST.
+    2. Exact title relevance comes next.
+    3. Larger/better quality file size breaks ties.
+    """
     fname = str(
         file_obj.get("file_name", "")
         if isinstance(file_obj, dict)
@@ -1094,18 +1199,26 @@ def _score_file_relevance(file_obj, query_str: str) -> Tuple[int, int]:
         if isinstance(file_obj, dict)
         else getattr(file_obj, "file_size", 0)
     )
-    clean_fname = re.sub(r"[^a-zA-Z0-9]", " ", fname)
+    clean_fname = re.sub(r"@[a-zA-Z0-9_.\-]+", " ", fname)
+    clean_fname = re.sub(r"[^a-zA-Z0-9]", " ", clean_fname)
     clean_fname = re.sub(r"\s+", " ", clean_fname).strip()
 
-    tokens = [t for t in query_str.lower().split() if t]
-    score = 0
-    if clean_fname.startswith(query_str.lower()):
-        score += 100
-    elif query_str.lower() in clean_fname:
-        score += 60
+    q_lower = query_str.lower().strip()
+    tokens = [t for t in q_lower.split() if t]
+
+    title_match_score = 0
+    if clean_fname.startswith(q_lower):
+        title_match_score += 100
+    elif q_lower in clean_fname:
+        title_match_score += 70
     if tokens and all(re.search(rf"\b{re.escape(t)}\b", clean_fname) for t in tokens):
-        score += 40
-    return (score, fsize)
+        title_match_score += 50
+
+    is_kan = 1 if _is_kannada_file(file_obj) else 0
+    # Kannada files with matching movie name always rank at the very top
+    kannada_priority = 1 if (is_kan and title_match_score > 0) else is_kan
+
+    return (kannada_priority, title_match_score, fsize)
 
 
 async def smart_filtered_search(
@@ -1113,25 +1226,16 @@ async def smart_filtered_search(
 ) -> Tuple[list, int, int]:
     lang_code = state.get("lang")
     qual_val = state.get("qual")
+    clean_words = await get_clean_words()
 
-    if not lang_code and not qual_val:
-        files, next_offset, total = await safe_search_db(
-            base_query, max_results=max_results, offset=offset
-        )
-        files.sort(key=lambda x: _score_file_relevance(x, base_query), reverse=True)
-        return files, next_offset, total
-
-    effective_query = build_effective_search_query(base_query, state)
-    direct_files, next_offset, total = await safe_search_db(
-        effective_query, max_results=max_results, offset=offset
-    )
-    if direct_files:
-        direct_files.sort(
-            key=lambda x: _score_file_relevance(x, base_query), reverse=True
-        )
-        return direct_files, next_offset, total
-
+    # Fetch a pool of up to 250 matching files so we can deduplicate (same name + same size)
+    # and sort Kannada matching files to the very top across all pages!
     pool, _, _ = await safe_search_db(base_query, max_results=250, offset=0)
+
+    if not pool and (lang_code or qual_val):
+        effective_query = build_effective_search_query(base_query, state)
+        pool, _, _ = await safe_search_db(effective_query, max_results=250, offset=0)
+
     if not pool:
         return [], 0, 0
 
@@ -1147,9 +1251,14 @@ async def smart_filtered_search(
             continue
         matched.append(f)
 
-    matched.sort(key=lambda x: _score_file_relevance(x, base_query), reverse=True)
-    total_matched = len(matched)
-    sliced = matched[offset : offset + max_results]
+    # 1. Remove duplicate files (same normalized name + same size)
+    deduped = _deduplicate_files(matched, clean_words)
+
+    # 2. Sort so Kannada matching files always appear first
+    deduped.sort(key=lambda x: _score_file_relevance(x, base_query), reverse=True)
+
+    total_matched = len(deduped)
+    sliced = deduped[offset : offset + max_results]
     new_next_offset = (
         offset + max_results if (offset + max_results) < total_matched else 0
     )
@@ -1329,45 +1438,43 @@ async def god_tier_search(
     if not clean_query and not translit_variants:
         return [], 0, 0, query, False
 
+    default_state = {"lang": None, "qual": None, "from_dym": False}
+
     if translit_variants:
         for variant in translit_variants:
             v_clean = sanitize_search_query(variant, allow_translit=False)
             if not v_clean:
                 continue
-            files, offset, total = await safe_search_db(
-                v_clean, max_results=10, offset=0
+            files, offset, total = await smart_filtered_search(
+                v_clean, default_state, max_results=10, offset=0
             )
             if files:
-                files.sort(
-                    key=lambda x: _score_file_relevance(x, v_clean), reverse=True
-                )
                 return files, offset, total, v_clean, True
 
     is_short_query = len(clean_query) <= 2
 
-    files, offset, total = await safe_search_db(clean_query, max_results=10, offset=0)
+    files, offset, total = await smart_filtered_search(
+        clean_query, default_state, max_results=10, offset=0
+    )
     if files:
-        files.sort(key=lambda x: _score_file_relevance(x, clean_query), reverse=True)
         return files, offset, total, clean_query, was_transliterated
 
     raw_alnum = re.sub(r"[^a-zA-Z0-9]", " ", query.lower())
     raw_alnum = re.sub(r"\s+", " ", raw_alnum).strip()
     if raw_alnum and raw_alnum != clean_query:
-        files, offset, total = await safe_search_db(raw_alnum, max_results=10, offset=0)
+        files, offset, total = await smart_filtered_search(
+            raw_alnum, default_state, max_results=10, offset=0
+        )
         if files:
-            files.sort(key=lambda x: _score_file_relevance(x, raw_alnum), reverse=True)
             return files, offset, total, raw_alnum, was_transliterated
 
     no_year_query = re.sub(r"\b(19\d{2}|20\d{2})\b", "", clean_query).strip()
     no_year_query = re.sub(r"\s+", " ", no_year_query)
     if no_year_query and no_year_query != clean_query and len(no_year_query) > 2:
-        files, offset, total = await safe_search_db(
-            no_year_query, max_results=10, offset=0
+        files, offset, total = await smart_filtered_search(
+            no_year_query, default_state, max_results=10, offset=0
         )
         if files:
-            files.sort(
-                key=lambda x: _score_file_relevance(x, no_year_query), reverse=True
-            )
             return files, offset, total, no_year_query, was_transliterated
 
     if is_short_query or not allow_fuzzy:
@@ -1379,14 +1486,10 @@ async def god_tier_search(
             clean_query, db_titles, n=1, cutoff=0.72
         ):
             corrected_query = matches[0]
-            c_files, c_offset, c_total = await safe_search_db(
-                corrected_query, max_results=10, offset=0
+            c_files, c_offset, c_total = await smart_filtered_search(
+                corrected_query, default_state, max_results=10, offset=0
             )
             if c_files:
-                c_files.sort(
-                    key=lambda x: _score_file_relevance(x, corrected_query),
-                    reverse=True,
-                )
                 return c_files, c_offset, c_total, corrected_query, True
     except Exception as e:
         logger.error(f"Fuzzy search fallback error: {e}")
@@ -1510,9 +1613,6 @@ async def build_result_buttons(
     )
     page_cb = f"pages#{current_page}#{total_pages}#{total_results}"
 
-    # Bottom navigation row:
-    # If the user came from Multi-Choice ("Did You Mean?"), place a no-colour "⬅️ Back"
-    # button at the very bottom beside the pagination buttons!
     nav_row: List[InlineKeyboardButton] = []
 
     if off_set is not None:
@@ -1528,7 +1628,7 @@ async def build_result_buttons(
             create_btn(
                 "⬅️ Back",
                 callback_data=f"dymback#{req}#{key}",
-                style=None,  # No colour as requested
+                style=None,
             )
         )
 
@@ -2186,15 +2286,15 @@ async def filter_menu_callbacks(bot: Client, query: CallbackQuery):
             )
 
         chosen_title = suggestions[sug_idx]
-        files, n_offset, total = await safe_search_db(
-            chosen_title, max_results=10, offset=0
+        dym_state = {"lang": None, "qual": None, "from_dym": True}
+        files, n_offset, total = await smart_filtered_search(
+            chosen_title, dym_state, max_results=10, offset=0
         )
         if not files:
             return await safe_answer(
                 query, "❌ No files found for that suggestion!", show_alert=True
             )
 
-        files.sort(key=lambda x: _score_file_relevance(x, chosen_title), reverse=True)
         BUTTONS_CACHE.set(key, chosen_title)
         set_filter_state(key, lang=None, qual=None, from_dym=True)
 
