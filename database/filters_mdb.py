@@ -1,4 +1,5 @@
 import logging
+import re
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from pyrogram import enums
@@ -9,16 +10,17 @@ logger = logging.getLogger(__name__)
 mydb = AsyncIOMotorClient(DATABASE_URI)[DATABASE_NAME]
 
 
-async def add_filter(grp_id, text, reply_text, btn, file, alert):
+async def add_filter(grp_id, text, reply_text, btn, file, alert="[]"):
+    keyword = str(text).lower().strip()
     await mydb[str(grp_id)].update_one(
-        {"text": str(text)},
+        {"text": keyword},
         {
             "$set": {
-                "text": str(text),
-                "reply": str(reply_text),
-                "btn": str(btn),
-                "file": str(file),
-                "alert": str(alert),
+                "text": keyword,
+                "reply": str(reply_text or ""),
+                "btn": str(btn or "[]"),
+                "file": str(file or "None"),
+                "alert": str(alert or "[]"),
             }
         },
         upsert=True,
@@ -26,29 +28,61 @@ async def add_filter(grp_id, text, reply_text, btn, file, alert):
 
 
 async def find_filter(group_id, name):
-    async for file in mydb[str(group_id)].find({"text": name}):
-        return file.get("reply"), file.get("btn"), file.get("alert"), file.get("file")
+    keyword = str(name).lower().strip()
+    doc = await mydb[str(group_id)].find_one({"text": keyword})
+    if not doc:
+        doc = await mydb[str(group_id)].find_one(
+            {"text": {"$regex": f"^{re.escape(keyword)}$", "$options": "i"}}
+        )
+    if doc:
+        return doc.get("reply"), doc.get("btn"), doc.get("alert"), doc.get("file")
     return None, None, None, None
 
 
 async def get_filters(group_id):
-    return [file.get("text") async for file in mydb[str(group_id)].find()]
+    try:
+        return [
+            doc.get("text")
+            async for doc in mydb[str(group_id)].find({}, {"text": 1})
+            if doc.get("text")
+        ]
+    except Exception as e:
+        logger.error(f"get_filters error for {group_id}: {e}")
+        return []
 
 
-async def delete_filter(message, text, group_id):
-    if (await mydb[str(group_id)].delete_one({"text": text})).deleted_count >= 1:
-        await message.reply_text(
-            f"'`{text}`' deleted.", quote=True, parse_mode=enums.ParseMode.MARKDOWN
-        )
-    else:
-        await message.reply_text("Couldn't find that filter!", quote=True)
+async def delete_filter(message, text, group_id) -> bool:
+    """Deletes a filter from MongoDB without sending duplicate chat replies (handled by pm_filter.py)."""
+    keyword = str(text).lower().strip()
+    res = await mydb[str(group_id)].delete_many(
+        {
+            "$or": [
+                {"text": keyword},
+                {"text": {"$regex": f"^{re.escape(keyword)}$", "$options": "i"}},
+            ]
+        }
+    )
+    return res.deleted_count > 0
 
 
 async def del_all(message, group_id, title):
     if str(group_id) not in await mydb.list_collection_names():
-        return await message.edit_text(f"Nothing to remove in {title}!")
+        if message:
+            return await message.edit_text(
+                f"Nothing to remove in {title}!",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        return
     try:
         await mydb[str(group_id)].drop()
-        await message.edit_text(f"All filters from {title} have been removed")
+        if message:
+            await message.edit_text(
+                f"All filters from {title} have been removed.",
+                parse_mode=enums.ParseMode.HTML,
+            )
     except Exception:
-        await message.edit_text("Couldn't remove all filters from group!")
+        if message:
+            await message.edit_text(
+                "Couldn't remove all filters from group!",
+                parse_mode=enums.ParseMode.HTML,
+            )
