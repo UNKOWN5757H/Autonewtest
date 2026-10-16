@@ -11,6 +11,7 @@ from pyrogram.errors import (
     ChatWriteForbidden,
     FloodWait,
     Forbidden,
+    MessageEmpty,
     MessageIdInvalid,
     MessageNotModified,
     PeerIdInvalid,
@@ -36,6 +37,8 @@ logger.setLevel(ERROR)
 # Strong reference set so sleeping auto-delete tasks are never garbage-collected
 AUTO_DELETE_TASKS = set()
 
+DEFAULT_FSUB_CAPTION = "<b>⚠️ Please join the channels below to get your file!</b>"
+
 # Safe optional imports
 try:
     from database.join_reqs import join_reqs as _join_reqs_db
@@ -58,8 +61,6 @@ except Exception:
 try:
     from plugins.uibuttons import (
         get_default_file_keyboard as _get_default_file_keyboard,
-    )
-    from plugins.uibuttons import (
         get_deleted_file_notify_keyboard as _get_deleted_file_notify_keyboard,
     )
 except Exception:
@@ -83,6 +84,16 @@ except ImportError:
 _SEND_MSG_PARAMS = set(inspect.signature(Client.send_message).parameters.keys())
 _REPLY_PARAMS = set(inspect.signature(Message.reply_text).parameters.keys())
 _EDIT_PARAMS = set(inspect.signature(Message.edit_text).parameters.keys())
+
+
+def _ensure_non_empty_text(text: Any, fallback: str = DEFAULT_FSUB_CAPTION) -> str:
+    """Ensures text is never None, empty, or whitespace-only (Fixes [400 MESSAGE_EMPTY])."""
+    if text is None:
+        return fallback
+    s = str(text).strip()
+    if not s or s.lower() in ["none", "null", "false"]:
+        return fallback
+    return s
 
 
 def _prepare_compat_kwargs(
@@ -122,17 +133,20 @@ def _prepare_compat_kwargs(
 async def safe_reply_text(
     message: Message, text: str, disable_web_page_preview: bool = True, **kwargs
 ):
+    safe_txt = _ensure_non_empty_text(text)
     compat_kw = _prepare_compat_kwargs(
         kwargs, _REPLY_PARAMS, disable_preview=disable_web_page_preview
     )
     try:
-        return await message.reply_text(text, **compat_kw)
+        return await message.reply_text(safe_txt, **compat_kw)
+    except MessageEmpty:
+        return await message.reply_text(DEFAULT_FSUB_CAPTION, **compat_kw)
     except TypeError:
         compat_kw.pop("disable_web_page_preview", None)
         compat_kw.pop("link_preview_options", None)
         compat_kw.pop("reply_parameters", None)
         compat_kw.pop("reply_to_message_id", None)
-        return await message.reply_text(text, **compat_kw)
+        return await message.reply_text(safe_txt, **compat_kw)
     except (ChatWriteForbidden, Forbidden, UserIsBlocked, PeerIdInvalid):
         return None
 
@@ -140,15 +154,16 @@ async def safe_reply_text(
 async def safe_edit_text(
     message: Message, text: str, disable_web_page_preview: bool = True, **kwargs
 ):
+    safe_txt = _ensure_non_empty_text(text)
     compat_kw = _prepare_compat_kwargs(
         kwargs, _EDIT_PARAMS, disable_preview=disable_web_page_preview
     )
     try:
-        return await message.edit_text(text, **compat_kw)
+        return await message.edit_text(safe_txt, **compat_kw)
     except TypeError:
         compat_kw.pop("disable_web_page_preview", None)
         compat_kw.pop("link_preview_options", None)
-        return await message.edit_text(text, **compat_kw)
+        return await message.edit_text(safe_txt, **compat_kw)
     except (MessageNotModified, MessageIdInvalid, ChatWriteForbidden, Forbidden):
         return None
 
@@ -160,17 +175,22 @@ async def safe_send_message(
     disable_web_page_preview: Optional[bool] = True,
     **kwargs,
 ):
+    safe_txt = _ensure_non_empty_text(text)
     compat_kw = _prepare_compat_kwargs(
         kwargs, _SEND_MSG_PARAMS, disable_preview=disable_web_page_preview
     )
     try:
-        return await client.send_message(chat_id=chat_id, text=text, **compat_kw)
+        return await client.send_message(chat_id=chat_id, text=safe_txt, **compat_kw)
+    except MessageEmpty:
+        return await client.send_message(
+            chat_id=chat_id, text=DEFAULT_FSUB_CAPTION, **compat_kw
+        )
     except TypeError:
         compat_kw.pop("disable_web_page_preview", None)
         compat_kw.pop("link_preview_options", None)
         compat_kw.pop("reply_parameters", None)
         compat_kw.pop("reply_to_message_id", None)
-        return await client.send_message(chat_id=chat_id, text=text, **compat_kw)
+        return await client.send_message(chat_id=chat_id, text=safe_txt, **compat_kw)
     except (ChatWriteForbidden, Forbidden, UserIsBlocked, PeerIdInvalid):
         return None
 
@@ -901,24 +921,33 @@ async def ForceSub(
             ]
         )
 
-        b_settings = await get_bot_settings()
-        custom_fsub_img = b_settings.get("fsub_img", getattr(info, "FSUB_IMG", None))
-        fsub_caption = b_settings.get(
-            "fsub_msg",
-            getattr(
-                info,
-                "FSUB_MSG",
-                "<b>⚠️ Please join the channels below to get your file!</b>",
-            ),
-        )
+        b_settings = await get_bot_settings() or {}
+        custom_fsub_img = b_settings.get("fsub_img") or getattr(info, "FSUB_IMG", None)
+
+        # Fix for [400 MESSAGE_EMPTY]: dict.get("fsub_msg", default) returns None if the key exists with value None!
+        raw_fsub_msg = b_settings.get("fsub_msg") or getattr(info, "FSUB_MSG", None)
+        fsub_caption = _ensure_non_empty_text(raw_fsub_img_or_txt := raw_fsub_msg, DEFAULT_FSUB_CAPTION)
+
+        default_markup = InlineKeyboardMarkup(not_joined_buttons)
+        try:
+            parsed_cap, parsed_markup = parse_text_and_markup(
+                fsub_caption, default_markup
+            )
+            fsub_caption = _ensure_non_empty_text(parsed_cap, DEFAULT_FSUB_CAPTION)
+            final_markup = parsed_markup or default_markup
+        except Exception:
+            final_markup = default_markup
 
         try:
-            if custom_fsub_img and str(custom_fsub_img).lower() != "none":
+            if (
+                custom_fsub_img
+                and str(custom_fsub_img).strip().lower() not in ["none", "null", "false", ""]
+            ):
                 try:
                     await message.reply_photo(
                         photo=custom_fsub_img,
                         caption=fsub_caption,
-                        reply_markup=InlineKeyboardMarkup(not_joined_buttons),
+                        reply_markup=final_markup,
                         parse_mode=enums.ParseMode.HTML,
                     )
                     return False
@@ -927,7 +956,7 @@ async def ForceSub(
             await safe_reply_text(
                 message,
                 fsub_caption,
-                reply_markup=InlineKeyboardMarkup(not_joined_buttons),
+                reply_markup=final_markup,
                 disable_web_page_preview=True,
                 parse_mode=enums.ParseMode.HTML,
             )
@@ -1013,7 +1042,7 @@ async def _deliver_verified_file(
             except Exception:
                 pass
 
-        if not f_caption:
+        if not f_caption or not str(f_caption).strip():
             f_caption = f"<b>{title}</b>"
         elif not f_caption.strip().startswith("<b>"):
             f_caption = f"<b>{f_caption}</b>"
@@ -1024,6 +1053,7 @@ async def _deliver_verified_file(
         final_caption, final_keyboard = parse_text_and_markup(
             f_caption, default_file_kb
         )
+        final_caption = _ensure_non_empty_text(final_caption, f"<b>{title}</b>")
     else:
         # Check if stored in genlink_files DB
         try:
@@ -1040,6 +1070,29 @@ async def _deliver_verified_file(
         db_file_id = file_id
         final_caption = "<b>🎉 Thank you for joining! Here is your file:</b>"
         final_keyboard = default_file_kb
+
+    # Send optional Info Message / Info Image before delivering the file if configured
+    info_msg_txt = getattr(info, "INFO_MSG", None)
+    info_img_val = getattr(info, "INFO_IMG", None)
+    pre_info_msg = None
+    if info_msg_txt or info_img_val:
+        try:
+            if info_img_val and str(info_img_val).strip().lower() not in ["none", "null", ""]:
+                pre_info_msg = await bot.send_photo(
+                    chat_id=user_id,
+                    photo=info_img_val,
+                    caption=str(info_msg_txt or ""),
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            elif info_msg_txt and str(info_msg_txt).strip():
+                pre_info_msg = await safe_send_message(
+                    bot,
+                    chat_id=user_id,
+                    text=str(info_msg_txt),
+                    parse_mode=enums.ParseMode.HTML,
+                )
+        except Exception:
+            pre_info_msg = None
 
     sent_msg = None
     try:
@@ -1102,7 +1155,7 @@ async def _deliver_verified_file(
                     parse_mode=enums.ParseMode.HTML,
                 )
                 schedule_auto_delete(
-                    bot, chat_id, True, delete_timer, sent_msg, warn_msg
+                    bot, chat_id, True, delete_timer, pre_info_msg, sent_msg, warn_msg
                 )
         except Exception as e:
             logger.error(f"FSub auto-delete schedule error: {e}")
