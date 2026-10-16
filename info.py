@@ -5,9 +5,9 @@ id_pattern = re.compile(r"^.\d+$")
 
 
 def is_enabled(value, default):
-    if value.lower() in ["true", "yes", "1", "enable", "y"]:
+    if str(value).lower() in ["true", "yes", "1", "enable", "y"]:
         return True
-    elif value.lower() in ["false", "no", "0", "disable", "n"]:
+    elif str(value).lower() in ["false", "no", "0", "disable", "n"]:
         return False
     else:
         return default
@@ -16,20 +16,34 @@ def is_enabled(value, default):
 SESSION = environ.get("SESSION", "VersionQ")
 API_ID = int(environ.get("API_ID", "2468192"))
 API_HASH = environ.get("API_HASH", "4906b3f8f198ec0e24edb2c197677678")
-BOT_TOKEN = environ.get("BOT_TOKEN", " ")
+BOT_TOKEN = environ.get("BOT_TOKEN", "").strip()
 PORT = int(environ.get("PORT", "8080"))
 
 CACHE_TIME = int(environ.get("CACHE_TIME", 300))
-USE_CAPTION_FILTER = bool(environ.get("USE_CAPTION_FILTER", False))
+USE_CAPTION_FILTER = is_enabled(environ.get("USE_CAPTION_FILTER", "False"), False)
 PICS = (environ.get("PICS", "https://iili.io/COHUHil.jpg")).split()
 
 # ⚡ GLOBAL AUTO-DELETE SETTINGS (in seconds)
 FILE_AUTO_DELETE = int(environ.get("FILE_AUTO_DELETE", 1800))
 BUTTON_AUTO_DELETE = int(environ.get("BUTTON_AUTO_DELETE", 1800))
+BUTTON_DEL = BUTTON_AUTO_DELETE
 AUTO_DELETE_TIME = int(environ.get("AUTO_DELETE_TIME", 1800))
 BROADCAST_DELETE_TIME = int(environ.get("BROADCAST_DELETE_TIME", 86400))
+AUTO_DELETE = is_enabled(environ.get("AUTO_DELETE", "True"), True)
 
+# 🛠️ SYSTEM & FEATURE FLAGS
 REPAIR_MODE = is_enabled(environ.get("REPAIR_MODE", "False"), False)
+ENABLE_REACTION = is_enabled(environ.get("ENABLE_REACTION", "True"), True)
+REACTIONS = ["❤️", "🔥", "👍", "🎉", "🤩", "⚡", "💯", "🥰", "👏", "🍿"]
+
+# 🛡️ ANTI-FLOOD DEFAULTS
+FLOOD_LIMIT = int(environ.get("FLOOD_LIMIT", 5))
+FLOOD_TIME = int(environ.get("FLOOD_TIME", 5))
+FLOOD_ACTION = environ.get("FLOOD_ACTION", "delete")
+
+# 🔗 EXTRA FILTER BUTTON URLS
+EXTRA_BTN_1_URL = environ.get("EXTRA_BTN_1_URL", "https://t.me/+lcTawsnhdi0zYWE1")
+EXTRA_BTN_2_URL = environ.get("EXTRA_BTN_2_URL", "https://t.me/linkz_ki_duniyaa")
 
 ADMINS = [
     int(admin) if id_pattern.search(admin) else admin
@@ -70,9 +84,9 @@ FSUB_CHANNELS = {}
 
 LOG_CHANNEL = int(environ.get("LOG_CHANNEL", "-1001693006436"))
 SUPPORT_CHAT = environ.get("SUPPORT_CHAT", "Kannada_Filmy_Group")
-P_TTI_SHOW_OFF = is_enabled((environ.get("P_TTI_SHOW_OFF", "True")), False)
-IMDB = is_enabled((environ.get("IMDB", "False")), True)
-SINGLE_BUTTON = is_enabled((environ.get("SINGLE_BUTTON", "True")), False)
+P_TTI_SHOW_OFF = is_enabled(environ.get("P_TTI_SHOW_OFF", "True"), False)
+IMDB = is_enabled(environ.get("IMDB", "False"), True)
+SINGLE_BUTTON = is_enabled(environ.get("SINGLE_BUTTON", "True"), False)
 
 CUSTOM_FILE_CAPTION = environ.get(
     "CUSTOM_FILE_CAPTION",
@@ -90,6 +104,11 @@ NOT_FOUND_IMG = environ.get(
     "https://telegra.ph/file/c4f0458d30f61993aad45-086b84e8363b3c582e.jpg",
 )
 
+# 🖼️ UI & CUSTOM MESSAGE IMAGES
+START_IMG = environ.get("START_IMG", None)
+HELP_IMG = environ.get("HELP_IMG", None)
+ABOUT_IMG = environ.get("ABOUT_IMG", None)
+AUTO_IMG = environ.get("AUTO_IMG", None)
 INFO_MSG = environ.get("INFO_MSG", None)
 INFO_IMG = environ.get("INFO_IMG", None)
 DEL_MSG = environ.get("DEL_MSG", None)
@@ -108,9 +127,9 @@ INDEX_REQ_CHANNEL = int(environ.get("INDEX_REQ_CHANNEL", LOG_CHANNEL))
 FILE_STORE_CHANNEL = [
     int(ch) for ch in (environ.get("FILE_STORE_CHANNEL", "-1002961955349")).split()
 ]
-MELCOW_NEW_USERS = is_enabled((environ.get("MELCOW_NEW_USERS", "False")), True)
-PROTECT_CONTENT = is_enabled((environ.get("PROTECT_CONTENT", "False")), False)
-PUBLIC_FILE_STORE = is_enabled((environ.get("PUBLIC_FILE_STORE", "True")), True)
+MELCOW_NEW_USERS = is_enabled(environ.get("MELCOW_NEW_USERS", "False"), True)
+PROTECT_CONTENT = is_enabled(environ.get("PROTECT_CONTENT", "False"), False)
+PUBLIC_FILE_STORE = is_enabled(environ.get("PUBLIC_FILE_STORE", "True"), True)
 
 MOVIE_UPDATE_NOTIFICATION = is_enabled(
     environ.get("MOVIE_UPDATE_NOTIFICATION", "True"), False
@@ -127,7 +146,7 @@ MOVIE_UPDATE_CHANNEL = [
 
 AUTOPOSTCHANNEL = [
     int(ch) for ch in environ.get("AUTOPOSTCHANNEL", "-1001923564465").split()
-]  # Change to your auto-post channel ID
+]
 
 IMAGE_FETCH = is_enabled(environ.get("IMAGE_FETCH", "True"), True)
 LINK_PREVIEW = is_enabled(environ.get("LINK_PREVIEW", "False"), False)
@@ -136,31 +155,31 @@ TMDB_API_KEY = environ.get("TMDB_API_KEY", "")
 TMDB_POSTER = is_enabled(environ.get("TMDB_POSTER", "False"), False)
 LANDSCAPE_POSTER = is_enabled(environ.get("LANDSCAPE_POSTER", "True"), True)
 
-LOG_STR = "Current Cusomized Configurations are:-\n"
+LOG_STR = "Current Customized Configurations are:-\n"
 LOG_STR += (
-    "IMDB Results are enabled, Bot will be showing imdb details for you queries.\n"
+    "IMDB Results are enabled, Bot will be showing imdb details for your queries.\n"
     if IMDB
-    else "IMBD Results are disabled.\n"
+    else "IMDB Results are disabled.\n"
 )
 LOG_STR += (
-    "P_TTI_SHOW_OFF found , Users will be redirected to send /start to Bot PM instead of sending file file directly\n"
+    "P_TTI_SHOW_OFF found, Users will be redirected to send /start to Bot PM instead of sending file directly\n"
     if P_TTI_SHOW_OFF
-    else "P_TTI_SHOW_OFF is disabled files will be send in PM, instead of sending start.\n"
+    else "P_TTI_SHOW_OFF is disabled, files will be sent in PM instead of sending start.\n"
 )
 LOG_STR += (
-    "SINGLE_BUTTON is Found, filename and files size will be shown in a single button instead of two separate buttons\n"
+    "SINGLE_BUTTON is Found, filename and file size will be shown in a single button instead of two separate buttons\n"
     if SINGLE_BUTTON
-    else "SINGLE_BUTTON is disabled , filename and file_sixe will be shown as different buttons\n"
+    else "SINGLE_BUTTON is disabled, filename and file size will be shown as different buttons\n"
 )
 LOG_STR += (
-    f"CUSTOM_FILE_CAPTION enabled with value {CUSTOM_FILE_CAPTION}, your files will be send along with this customized caption.\n"
+    f"CUSTOM_FILE_CAPTION enabled with value {CUSTOM_FILE_CAPTION}, your files will be sent along with this customized caption.\n"
     if CUSTOM_FILE_CAPTION
     else "No CUSTOM_FILE_CAPTION Found, Default captions of file will be used.\n"
 )
 LOG_STR += (
-    "Long IMDB storyline enabled."
+    "Long IMDB storyline enabled.\n"
     if LONG_IMDB_DESCRIPTION
-    else "LONG_IMDB_DESCRIPTION is disabled , Plot will be shorter.\n"
+    else "LONG_IMDB_DESCRIPTION is disabled, Plot will be shorter.\n"
 )
 LOG_STR += (
     "Spell Check Mode Is Enabled, bot will be suggesting related movies if movie not found\n"
