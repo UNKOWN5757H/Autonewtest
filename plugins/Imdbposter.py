@@ -863,7 +863,9 @@ async def imdb_search(client: Client, message: Message):
 @Client.on_callback_query(filters.regex(r"^imdb#"), group=-2)
 async def imdb_callback(client: Client, query: CallbackQuery):
     if not await cb_user_admin(client, query):
-        return await safe_answer(query, "❌ Unauthorized: Admins only!", show_alert=True)
+        return await safe_answer(
+            query, "❌ Unauthorized: Admins only!", show_alert=True
+        )
 
     try:
         _, payload = query.data.split("#", 1)
