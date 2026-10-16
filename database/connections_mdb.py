@@ -143,7 +143,9 @@ async def make_inactive(user_id: Union[int, str]) -> bool:
     return res.modified_count != 0
 
 
-async def delete_connection(user_id: Union[int, str], group_id: Union[int, str]) -> bool:
+async def delete_connection(
+    user_id: Union[int, str], group_id: Union[int, str]
+) -> bool:
     uid_str = str(user_id).strip()
     gid_str = str(group_id).strip()
     query = await _find_user_doc(uid_str)
