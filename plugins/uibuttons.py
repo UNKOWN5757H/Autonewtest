@@ -2725,8 +2725,12 @@ async def _handle_help_cmd_button(client: Client, query: CallbackQuery, cmd_name
                 resp,
                 query.from_user,
                 cmd_clean,
-                arg_text="" if cmd_clean in ["broadcast", "group_broadcast"] else arg_str,
-                arg_html="" if cmd_clean in ["broadcast", "group_broadcast"] else arg_html,
+                arg_text=(
+                    "" if cmd_clean in ["broadcast", "group_broadcast"] else arg_str
+                ),
+                arg_html=(
+                    "" if cmd_clean in ["broadcast", "group_broadcast"] else arg_html
+                ),
                 reply_msg=resp,
             )
         else:
