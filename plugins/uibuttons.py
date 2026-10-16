@@ -84,14 +84,16 @@ DEFAULT_CLEANFILE_TXT = (
     "🧹 <b>Clean Filename Words Manager</b>\n"
     "━━━━━━━━━━━━━━━━━━━━━\n"
     "⚙️ <b>Current Mode:</b> {mode_str}\n"
+    "🛡️ <b>Always Auto-Removed:</b> <code>@usernames</code>, <code>links</code> & <code>symbols</code>\n"
     "🔢 <b>Total Active Words:</b> <code>{count}</code>\n\n"
     "📋 <b>Active Words Removed From Buttons:</b>\n{words_display}\n"
     "━━━━━━━━━━━━━━━━━━━━━\n"
     "<b>Commands & Interactive Controls:</b>\n"
     "• <code>/listcleanfilename</code> — View & manage active clean words.\n"
-    "• <code>/setcleanfilename w1, w2</code> — Set custom words to strip from file buttons.\n"
+    "• <code>/addcleanfilename w1, w2</code> — Add words to existing list.\n"
+    "• <code>/setcleanfilename w1, w2</code> — Replace custom words list.\n"
     "• <code>/defaultcleanfilename</code> — Restore default extensions & tags.\n"
-    "• <code>/remcleanfilename</code> — Remove all clean words."
+    "• <code>/remcleanfilename</code> — Clear custom clean words."
 )
 
 # Direct Shortcut Command -> Help Section Key Map
@@ -662,6 +664,10 @@ def _invalidate_pm_filter_clean_cache():
         import plugins.pm_filter as _pmf
 
         _pmf._CLEAN_WORDS_CACHE = (0.0, DEFAULT_CLEAN_WORDS)
+        if hasattr(_pmf, "GLOBAL_SEARCH_CACHE") and hasattr(
+            _pmf.GLOBAL_SEARCH_CACHE, "_data"
+        ):
+            _pmf.GLOBAL_SEARCH_CACHE._data.clear()
     except Exception:
         pass
 
@@ -1641,7 +1647,7 @@ async def build_cleanwords_panel_ui() -> Tuple[str, InlineKeyboardMarkup]:
     words_display = (
         ", ".join(f"<code>{html.escape(str(w))}</code>" for w in words)
         if words
-        else "<i>None (Filenames shown uncut)</i>"
+        else "<i>None (Only @usernames, links & symbols are stripped)</i>"
     )
     tpl = getattr(script, "CLEANFILE_TXT", DEFAULT_CLEANFILE_TXT)
     try:
@@ -1655,6 +1661,12 @@ async def build_cleanwords_panel_ui() -> Tuple[str, InlineKeyboardMarkup]:
             mode_str=mode_str,
             count=len(words),
             words_display=words_display,
+        )
+    if "@usernames" not in text:
+        text = text.replace(
+            f"⚙️ <b>Current Mode:</b> {mode_str}\n",
+            f"⚙️ <b>Current Mode:</b> {mode_str}\n"
+            f"🛡️ <b>Always Auto-Removed:</b> <code>@usernames</code>, <code>links</code> & <code>symbols</code>\n",
         )
     return text, get_cleanwords_keyboard(use_default=use_default)
 
