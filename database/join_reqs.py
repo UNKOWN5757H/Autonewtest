@@ -20,7 +20,9 @@ class JoinReqs:
                     uri, serverSelectionTimeoutMS=5000
                 )
                 self.db = self.client["JoinReqs"]
-                col_name = str(REQ_CHANNEL).strip() if REQ_CHANNEL else "join_reqs_default"
+                col_name = (
+                    str(REQ_CHANNEL).strip() if REQ_CHANNEL else "join_reqs_default"
+                )
                 self.col = self.db[col_name]
             except Exception as e:
                 logger.error(f"JoinReqs MongoDB Error: {e}")
@@ -62,9 +64,7 @@ class JoinReqs:
             return None
         try:
             uid = int(user_id)
-            return await self.col.find_one(
-                {"$or": [{"user_id": uid}, {"_id": uid}]}
-            )
+            return await self.col.find_one({"$or": [{"user_id": uid}, {"_id": uid}]})
         except Exception:
             return None
 
@@ -81,9 +81,7 @@ class JoinReqs:
             return False
         try:
             uid = int(user_id)
-            res = await self.col.delete_many(
-                {"$or": [{"user_id": uid}, {"_id": uid}]}
-            )
+            res = await self.col.delete_many({"$or": [{"user_id": uid}, {"_id": uid}]})
             return res.deleted_count > 0
         except Exception:
             return False
