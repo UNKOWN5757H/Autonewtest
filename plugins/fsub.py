@@ -61,6 +61,8 @@ except Exception:
 try:
     from plugins.uibuttons import (
         get_default_file_keyboard as _get_default_file_keyboard,
+    )
+    from plugins.uibuttons import (
         get_deleted_file_notify_keyboard as _get_deleted_file_notify_keyboard,
     )
 except Exception:
@@ -926,7 +928,9 @@ async def ForceSub(
 
         # Fix for [400 MESSAGE_EMPTY]: dict.get("fsub_msg", default) returns None if the key exists with value None!
         raw_fsub_msg = b_settings.get("fsub_msg") or getattr(info, "FSUB_MSG", None)
-        fsub_caption = _ensure_non_empty_text(raw_fsub_img_or_txt := raw_fsub_msg, DEFAULT_FSUB_CAPTION)
+        fsub_caption = _ensure_non_empty_text(
+            raw_fsub_img_or_txt := raw_fsub_msg, DEFAULT_FSUB_CAPTION
+        )
 
         default_markup = InlineKeyboardMarkup(not_joined_buttons)
         try:
@@ -939,10 +943,12 @@ async def ForceSub(
             final_markup = default_markup
 
         try:
-            if (
-                custom_fsub_img
-                and str(custom_fsub_img).strip().lower() not in ["none", "null", "false", ""]
-            ):
+            if custom_fsub_img and str(custom_fsub_img).strip().lower() not in [
+                "none",
+                "null",
+                "false",
+                "",
+            ]:
                 try:
                     await message.reply_photo(
                         photo=custom_fsub_img,
@@ -1077,7 +1083,11 @@ async def _deliver_verified_file(
     pre_info_msg = None
     if info_msg_txt or info_img_val:
         try:
-            if info_img_val and str(info_img_val).strip().lower() not in ["none", "null", ""]:
+            if info_img_val and str(info_img_val).strip().lower() not in [
+                "none",
+                "null",
+                "",
+            ]:
                 pre_info_msg = await bot.send_photo(
                     chat_id=user_id,
                     photo=info_img_val,
