@@ -1,20 +1,28 @@
 import asyncio
 import difflib
 import html
+import inspect
 import re
+import time
 import warnings
 from io import BytesIO
 from logging import ERROR, getLogger
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 from PIL import Image
 from pyrogram import Client, enums, filters
 from pyrogram.errors import (
+    ChatWriteForbidden,
+    Forbidden,
     MediaCaptionTooLong,
     MediaEmpty,
+    MessageIdInvalid,
     MessageNotModified,
+    PeerIdInvalid,
     PhotoInvalidDimensions,
     QueryIdInvalid,
+    UserIsBlocked,
     WebpageMediaEmpty,
 )
 from pyrogram.types import (
@@ -29,6 +37,105 @@ from info import IMAGE_FETCH, TMDB_API_KEY
 
 logger = getLogger(__name__)
 logger.setLevel(ERROR)
+
+# ============================================================
+# 🛡️ PYROGRAM v2.2.26 (LAYER 230) COMPATIBILITY ENGINE
+# ============================================================
+try:
+    from pyrogram.types import LinkPreviewOptions
+except ImportError:
+    LinkPreviewOptions = None
+
+try:
+    from pyrogram.types import ReplyParameters
+except ImportError:
+    ReplyParameters = None
+
+_REPLY_PARAMS = set(inspect.signature(Message.reply_text).parameters.keys())
+_EDIT_PARAMS = set(inspect.signature(Message.edit_text).parameters.keys())
+
+
+def _prepare_compat_kwargs(
+    kwargs: dict, supported_params: set, disable_preview: Optional[bool] = None
+) -> dict:
+    clean_kw = dict(kwargs)
+    explicit_disable = clean_kw.pop("disable_web_page_preview", disable_preview)
+
+    if explicit_disable is not None:
+        if "disable_web_page_preview" in supported_params:
+            clean_kw["disable_web_page_preview"] = bool(explicit_disable)
+        elif (
+            "link_preview_options" in supported_params
+            and LinkPreviewOptions is not None
+        ):
+            try:
+                clean_kw["link_preview_options"] = LinkPreviewOptions(
+                    is_disabled=bool(explicit_disable)
+                )
+            except Exception:
+                pass
+
+    if "reply_to_message_id" in clean_kw:
+        rep_id = clean_kw.pop("reply_to_message_id")
+        if rep_id:
+            if "reply_to_message_id" in supported_params:
+                clean_kw["reply_to_message_id"] = rep_id
+            elif "reply_parameters" in supported_params and ReplyParameters is not None:
+                try:
+                    clean_kw["reply_parameters"] = ReplyParameters(message_id=rep_id)
+                except Exception:
+                    pass
+
+    return clean_kw
+
+
+async def safe_reply_text(
+    message: Message, text: str, disable_web_page_preview: bool = True, **kwargs
+) -> Optional[Message]:
+    compat_kw = _prepare_compat_kwargs(
+        kwargs, _REPLY_PARAMS, disable_preview=disable_web_page_preview
+    )
+    try:
+        return await message.reply_text(text, **compat_kw)
+    except TypeError:
+        compat_kw.pop("disable_web_page_preview", None)
+        compat_kw.pop("link_preview_options", None)
+        compat_kw.pop("reply_parameters", None)
+        compat_kw.pop("reply_to_message_id", None)
+        return await message.reply_text(text, **compat_kw)
+    except (ChatWriteForbidden, Forbidden, UserIsBlocked, PeerIdInvalid):
+        return None
+
+
+async def safe_edit_text(
+    message: Message, text: str, disable_web_page_preview: bool = True, **kwargs
+) -> Optional[Message]:
+    compat_kw = _prepare_compat_kwargs(
+        kwargs, _EDIT_PARAMS, disable_preview=disable_web_page_preview
+    )
+    try:
+        return await message.edit_text(text, **compat_kw)
+    except TypeError:
+        compat_kw.pop("disable_web_page_preview", None)
+        compat_kw.pop("link_preview_options", None)
+        return await message.edit_text(text, **compat_kw)
+    except (MessageNotModified, MessageIdInvalid, ChatWriteForbidden, Forbidden):
+        return None
+
+
+async def safe_answer(
+    query: CallbackQuery, text: Optional[str] = None, show_alert: bool = False
+):
+    if not query:
+        return
+    try:
+        if text is not None:
+            await query.answer(str(text)[:200], show_alert=show_alert)
+        else:
+            await query.answer(show_alert=show_alert)
+    except (QueryIdInvalid, Exception):
+        pass
+
 
 DEFAULT_IMDB_TEMPLATE = """🎬 <b>Title:</b> <a href="{url}">{title}</a> ({year})
 ⭐️ <b>Rating:</b> {rating} / 10
@@ -50,7 +157,7 @@ class SafeDict(dict):
 Image.MAX_IMAGE_PIXELS = None
 warnings.simplefilter("ignore", Image.DecompressionBombWarning)
 
-# --- TMDB Configuration ---
+# --- TMDB Configuration & Fast In-Memory Cache ---
 TMDB_BEARER_TOKEN = (
     "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI2ZGU3YTIyZGU1YjE5YTFjNmUyZGU5ZWEyMzE2ZmQxMCIs"
     "Im5iZiI6MTc0NTMyMjQ2Mi41MzMsInN1YiI6IjY4MDc4MWRlYzVjODAzNWZiMDhhNjExNCIsInNjb3"
@@ -59,7 +166,24 @@ TMDB_BEARER_TOKEN = (
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/original"
 
-_session: aiohttp.ClientSession | None = None
+_session: Optional[aiohttp.ClientSession] = None
+_TMDB_CACHE: Dict[str, Tuple[float, Any]] = {}
+
+
+def _cache_get(key: str) -> Optional[Any]:
+    item = _TMDB_CACHE.get(key)
+    if not item:
+        return None
+    if time.time() > item[0]:
+        _TMDB_CACHE.pop(key, None)
+        return None
+    return item[1]
+
+
+def _cache_set(key: str, val: Any, ttl: int = 1800):
+    if len(_TMDB_CACHE) >= 1000:
+        _TMDB_CACHE.clear()
+    _TMDB_CACHE[key] = (time.time() + ttl, val)
 
 
 async def get_session() -> aiohttp.ClientSession:
@@ -100,7 +224,7 @@ async def fetch_image(url: str, size=(860, 1200)):
 # ============================================================
 # 👑 FULL POWER ADMIN CHECKER (GLOBAL + CHAT + ANONYMOUS)
 # ============================================================
-def get_admin_list():
+def get_admin_list() -> List[int]:
     raw_admins = getattr(info, "ADMINS", [])
     if isinstance(raw_admins, (str, int)):
         raw_admins = str(raw_admins).replace(",", " ").split()
@@ -116,15 +240,12 @@ async def is_user_admin(client: Client, message: Message) -> bool:
         return False
     admin_list = get_admin_list()
 
-    # 1. Global Admin Check
     if message.from_user and message.from_user.id in admin_list:
         return True
 
-    # 2. Anonymous/Channel Admin Check
     if message.sender_chat and message.sender_chat.id in admin_list:
         return True
 
-    # 3. Group Admin Check
     if message.chat and message.chat.type in [
         enums.ChatType.GROUP,
         enums.ChatType.SUPERGROUP,
@@ -177,7 +298,6 @@ async def _cb_admin_filter_func(_, client: Client, query: CallbackQuery) -> bool
     return await cb_user_admin(client, query)
 
 
-# Native async Pyrogram filters (Fixes RuntimeError: asyncio.run() in running event loop)
 admin_filter = filters.create(_admin_filter_func)
 cb_admin_filter = filters.create(_cb_admin_filter_func)
 
@@ -231,15 +351,28 @@ async def _tmdb_get(path, params=None, api_key=None):
 
 
 async def _fetch_media_details(media_type: str, media_id: int, api_key=None):
+    cache_key = f"det:{media_type}:{media_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     params = {
         "append_to_response": "credits,external_ids,alternative_titles,release_dates,images"
     }
-    return await _tmdb_get(f"{media_type}/{media_id}", params=params, api_key=api_key)
+    res = await _tmdb_get(f"{media_type}/{media_id}", params=params, api_key=api_key)
+    if res:
+        _cache_set(cache_key, res, ttl=1800)
+    return res
 
 
 async def _search_candidates(query: str, api_key=None, limit: int = 10):
     """Searches TMDB and returns a ranked list of candidate dicts."""
     clean_title, year = _sanitize_and_extract(query)
+    cache_key = f"cand:{clean_title.lower()}:{year}:{limit}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     queries_to_try = list(
         dict.fromkeys(
             [
@@ -326,7 +459,9 @@ async def _search_candidates(query: str, api_key=None, limit: int = 10):
         )
 
     scored_candidates.sort(key=lambda x: x["score"], reverse=True)
-    return scored_candidates[:limit]
+    final_list = scored_candidates[:limit]
+    _cache_set(cache_key, final_list, ttl=1800)
+    return final_list
 
 
 async def _search_media_id(query: str, api_key=None):
@@ -482,14 +617,12 @@ async def _fetch_tmdb_by_id(raw_id: str, api_key=None):
     """Fetches TMDB media details directly by 'movie:123', 'tv:123', 'tt1234567', or numeric ID."""
     s_id = str(raw_id).strip()
 
-    # 1. Explicit media_type:media_id format (e.g. "movie:12345" or "tv:12345")
     if ":" in s_id:
         mtype, mid = s_id.split(":", 1)
         if mtype in ("movie", "tv") and mid.isdigit():
             details = await _fetch_media_details(mtype, int(mid), api_key=api_key)
             return _format_details_output(s_id, mtype, int(mid), details)
 
-    # 2. IMDb ID format (e.g. "tt1234567")
     if s_id.startswith("tt"):
         find_res = await _tmdb_get(
             f"find/{s_id}",
@@ -503,7 +636,6 @@ async def _fetch_tmdb_by_id(raw_id: str, api_key=None):
                 details = await _fetch_media_details(mtype, mid, api_key=api_key)
                 return _format_details_output(s_id, mtype, mid, details)
 
-    # 3. Raw numeric TMDB ID
     if s_id.isdigit():
         mid = int(s_id)
         for mtype in ("movie", "tv"):
@@ -642,16 +774,18 @@ async def get_movie_detailsx(query, id=False, file=None):
 # ============================================================
 # 🎯 IMDB SEARCH COMMANDS & BUTTON CALLBACKS
 # ============================================================
-@Client.on_message(filters.command(["imdb", "search"]) & admin_filter)
+@Client.on_message(filters.command(["imdb", "search"]) & admin_filter, group=-2)
 async def imdb_search(client: Client, message: Message):
     if len(message.command) < 2:
-        return await message.reply_text(
+        return await safe_reply_text(
+            message,
             "🎬 <b>Usage:</b> <code>/imdb Movie or Series Name</code>",
             parse_mode=enums.ParseMode.HTML,
         )
 
     query = message.text.split(None, 1)[1].strip()
-    wait_msg = await message.reply_text(
+    wait_msg = await safe_reply_text(
+        message,
         f"🔎 <b>Searching TMDB/IMDb for:</b> <code>{html.escape(query)}</code>...",
         parse_mode=enums.ParseMode.HTML,
     )
@@ -659,10 +793,13 @@ async def imdb_search(client: Client, message: Message):
     try:
         movies = await get_poster(query, bulk=True)
         if not movies:
-            return await wait_msg.edit_text(
-                "❌ <b>No results found for your query.</b>",
-                parse_mode=enums.ParseMode.HTML,
-            )
+            if wait_msg:
+                return await safe_edit_text(
+                    wait_msg,
+                    "❌ <b>No results found for your query.</b>",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            return
 
         buttons = []
         for movie in movies[:10]:
@@ -696,47 +833,55 @@ async def imdb_search(client: Client, message: Message):
                 )
 
         if not buttons:
-            return await wait_msg.edit_text(
-                "❌ <b>Could not parse search results.</b>",
+            if wait_msg:
+                return await safe_edit_text(
+                    wait_msg,
+                    "❌ <b>Could not parse search results.</b>",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            return
+
+        buttons.append([InlineKeyboardButton("🔐 Close", callback_data="imdb#close")])
+        if wait_msg:
+            await safe_edit_text(
+                wait_msg,
+                f"🎥 <b>Found {len(buttons) - 1} result(s) for:</b> <code>{html.escape(query)}</code>\n"
+                f"👇 <i>Select a title below to generate its poster & details:</i>",
+                reply_markup=InlineKeyboardMarkup(buttons),
+                parse_mode=enums.ParseMode.HTML,
+            )
+    except Exception as e:
+        logger.error(f"imdb_search error: {e}")
+        if wait_msg:
+            await safe_edit_text(
+                wait_msg,
+                f"⚠️ <b>Search error:</b> <code>{html.escape(str(e))}</code>",
                 parse_mode=enums.ParseMode.HTML,
             )
 
-        buttons.append([InlineKeyboardButton("🔐 Close", callback_data="imdb#close")])
-        await wait_msg.edit_text(
-            f"🎥 <b>Found {len(buttons) - 1} result(s) for:</b> <code>{html.escape(query)}</code>\n"
-            f"👇 <i>Select a title below to generate its poster & details:</i>",
-            reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode=enums.ParseMode.HTML,
-        )
-    except Exception as e:
-        logger.error(f"imdb_search error: {e}")
-        await wait_msg.edit_text(
-            f"⚠️ <b>Search error:</b> <code>{html.escape(str(e))}</code>",
-            parse_mode=enums.ParseMode.HTML,
-        )
 
-
-@Client.on_callback_query(filters.regex(r"^imdb#"))
+@Client.on_callback_query(filters.regex(r"^imdb#"), group=-2)
 async def imdb_callback(client: Client, query: CallbackQuery):
     if not await cb_user_admin(client, query):
-        return await query.answer("❌ Unauthorized: Admins only!", show_alert=True)
+        return await safe_answer(query, "❌ Unauthorized: Admins only!", show_alert=True)
 
     try:
         _, payload = query.data.split("#", 1)
 
         if payload == "close":
-            await query.answer("Closed!")
+            await safe_answer(query, "Closed!")
             try:
                 await query.message.delete()
             except Exception:
                 pass
             return
 
-        await query.answer("⏳ Fetching movie details...", show_alert=False)
+        await safe_answer(query, "⏳ Fetching movie details...", show_alert=False)
 
         imdb = await get_poster(query=payload, id=True)
         if not imdb:
-            return await query.message.edit_text(
+            return await safe_edit_text(
+                query.message,
                 "❌ <b>Could not load details for this title.</b>",
                 parse_mode=enums.ParseMode.HTML,
             )
@@ -827,22 +972,17 @@ async def imdb_callback(client: Client, query: CallbackQuery):
                 except Exception:
                     pass
 
-        await query.message.edit_text(
+        await safe_edit_text(
+            query.message,
             caption,
             reply_markup=reply_markup,
             disable_web_page_preview=False,
             parse_mode=enums.ParseMode.HTML,
         )
-    except QueryIdInvalid:
-        pass
-    except MessageNotModified:
-        pass
     except Exception as e:
         logger.error(f"IMDb Callback Error: {e}")
-        try:
-            await query.message.edit_text(
-                f"⚠️ <b>Error loading details:</b> <code>{html.escape(str(e))}</code>",
-                parse_mode=enums.ParseMode.HTML,
-            )
-        except Exception:
-            pass
+        await safe_edit_text(
+            query.message,
+            f"⚠️ <b>Error loading details:</b> <code>{html.escape(str(e))}</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
