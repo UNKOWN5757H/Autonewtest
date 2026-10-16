@@ -162,7 +162,10 @@ async def _restore_persistent_settings():
         # 3. Restore deletion_settings timers (Both PM & Group Button Auto-Delete)
         del_doc = await bot_db["deletion_settings"].find_one({"_id": "timers"})
         if del_doc:
-            if "FILE_AUTO_DELETE" in del_doc and del_doc["FILE_AUTO_DELETE"] is not None:
+            if (
+                "FILE_AUTO_DELETE" in del_doc
+                and del_doc["FILE_AUTO_DELETE"] is not None
+            ):
                 val = int(del_doc["FILE_AUTO_DELETE"])
                 setattr(info, "FILE_AUTO_DELETE", val)
                 setattr(info, "AUTO_DELETE_TIME", val)
