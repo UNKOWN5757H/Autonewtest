@@ -257,9 +257,7 @@ async def safe_save_batch(media_list: list) -> Tuple[int, int, int]:
             except BulkWriteError as bwe:
                 saved_count = bwe.details.get("nInserted", 0)
                 write_errors = bwe.details.get("writeErrors", [])
-                dup_errors = sum(
-                    1 for err in write_errors if err.get("code") == 11000
-                )
+                dup_errors = sum(1 for err in write_errors if err.get("code") == 11000)
                 other_errors = len(write_errors) - dup_errors
                 return saved_count, batch_dups + dup_errors, other_errors
             except Exception as e:
@@ -420,7 +418,8 @@ def compile_clean_regex(clean_words: list) -> Optional[re.Pattern]:
     custom_words = [
         re.escape(w)
         for w in clean_words
-        if w and w.lower() not in {"mkv", "sandalwood", "mp4", "avi", "webm", "zip", "rar"}
+        if w
+        and w.lower() not in {"mkv", "sandalwood", "mp4", "avi", "webm", "zip", "rar"}
     ]
     if not custom_words:
         return None
@@ -442,7 +441,15 @@ def clean_filename(
         name = compiled_custom_re.sub("", name)
     else:
         for word in clean_words:
-            if word.lower() in ("mkv", "sandalwood", "mp4", "avi", "webm", "zip", "rar"):
+            if word.lower() in (
+                "mkv",
+                "sandalwood",
+                "mp4",
+                "avi",
+                "webm",
+                "zip",
+                "rar",
+            ):
                 continue
             name = re.sub(rf"(?i){re.escape(word)}", "", name)
 
@@ -532,13 +539,11 @@ async def auto_index_new_files(bot: Client, message: Message):
     whitelist = idx_settings.get("whitelist", [])
 
     if any(
-        b.lower() in raw_name_lower or b.lower() in raw_caption_lower
-        for b in blacklist
+        b.lower() in raw_name_lower or b.lower() in raw_caption_lower for b in blacklist
     ):
         return
     if whitelist and not any(
-        w.lower() in raw_name_lower or w.lower() in raw_caption_lower
-        for w in whitelist
+        w.lower() in raw_name_lower or w.lower() in raw_caption_lower for w in whitelist
     ):
         return
 
@@ -1329,13 +1334,18 @@ async def _fetch_chunk_safe(
     return []
 
 
-async def _copy_backup_safe(bot: Client, message: Message, backup_channel: int, sem: asyncio.Semaphore):
+async def _copy_backup_safe(
+    bot: Client, message: Message, backup_channel: int, sem: asyncio.Semaphore
+):
     """Copies a media message to the backup channel with FloodWait protection and concurrency control."""
     async with sem:
         for _ in range(2):
             try:
                 copied_msg = await message.copy(chat_id=backup_channel)
-                return getattr(copied_msg, copied_msg.media.value, None), copied_msg.caption
+                return (
+                    getattr(copied_msg, copied_msg.media.value, None),
+                    copied_msg.caption,
+                )
             except FloodWait as e:
                 await asyncio.sleep(e.value + 1)
             except Exception:
@@ -1479,23 +1489,30 @@ async def index_files_to_db(
                             continue
 
                         media_obj = getattr(message, msg_media.value, None)
-                        if not media_obj or getattr(media_obj, "file_size", 0) < min_size:
+                        if (
+                            not media_obj
+                            or getattr(media_obj, "file_size", 0) < min_size
+                        ):
                             unsupported += 1
                             continue
 
-                        raw_name = getattr(media_obj, "file_name", "Unknown") or "Unknown"
+                        raw_name = (
+                            getattr(media_obj, "file_name", "Unknown") or "Unknown"
+                        )
                         raw_caption = message.caption or ""
 
                         if blacklist_lower or whitelist_lower:
                             raw_name_l = raw_name.lower()
                             raw_cap_l = raw_caption.lower()
                             if blacklist_lower and any(
-                                b in raw_name_l or b in raw_cap_l for b in blacklist_lower
+                                b in raw_name_l or b in raw_cap_l
+                                for b in blacklist_lower
                             ):
                                 unsupported += 1
                                 continue
                             if whitelist_lower and not any(
-                                w in raw_name_l or w in raw_cap_l for w in whitelist_lower
+                                w in raw_name_l or w in raw_cap_l
+                                for w in whitelist_lower
                             ):
                                 unsupported += 1
                                 continue
@@ -1525,9 +1542,10 @@ async def index_files_to_db(
                             for item in backup_candidates
                         )
                     )
-                    for (_, orig_media, m_type, orig_cap), (copied_media, copied_cap) in zip(
-                        backup_candidates, backup_results
-                    ):
+                    for (_, orig_media, m_type, orig_cap), (
+                        copied_media,
+                        copied_cap,
+                    ) in zip(backup_candidates, backup_results):
                         final_media = copied_media or orig_media
                         final_cap = copied_cap if copied_media else orig_cap
                         raw_n = getattr(final_media, "file_name", "") or "File"
