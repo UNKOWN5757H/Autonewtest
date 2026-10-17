@@ -52,14 +52,11 @@ except ImportError:
     _std_make_inactive = None
 
 try:
-    from database.ia_filterdb import (
-        Media as _Media,
-        db as _db1_handle,
-        db2 as _db2_handle,
-        db3 as _db3_handle,
-        get_all_dbs_stats,
-        nuke_all_media_dbs,
-    )
+    from database.ia_filterdb import Media as _Media
+    from database.ia_filterdb import db as _db1_handle
+    from database.ia_filterdb import db2 as _db2_handle
+    from database.ia_filterdb import db3 as _db3_handle
+    from database.ia_filterdb import get_all_dbs_stats, nuke_all_media_dbs
 except ImportError:
     _Media = None
     _db1_handle = None
@@ -1838,7 +1835,9 @@ async def nuke_callbacks(bot: Client, query: CallbackQuery):
             if callable(nuke_all_media_dbs):
                 summary = await nuke_all_media_dbs()
                 total_del = summary.get("total_deleted", 0)
-                cleared_list = ", ".join(summary.get("dbs_cleared", [])) or "DB 1, DB 2, DB 3"
+                cleared_list = (
+                    ", ".join(summary.get("dbs_cleared", [])) or "DB 1, DB 2, DB 3"
+                )
                 return await safe_edit_text(
                     query.message,
                     f"✅ <b>All Media Databases Wiped Instantly!</b>\n\n"
