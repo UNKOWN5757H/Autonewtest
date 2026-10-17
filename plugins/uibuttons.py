@@ -7,6 +7,7 @@ import inspect
 import math
 import random
 import re
+import time
 from logging import ERROR, getLogger
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -53,6 +54,9 @@ from utils import get_size, temp
 logger = getLogger(__name__)
 logger.setLevel(ERROR)
 
+# In-memory cache of known registered user IDs so `/start file_...` never waits on MongoDB
+_KNOWN_USERS_RAM: Set[int] = set()
+
 # Safe optional imports
 try:
     from database.ia_filterdb import Media
@@ -84,7 +88,7 @@ DEFAULT_CLEANFILE_TXT = (
     "🧹 <b>Clean Filename Words Manager</b>\n"
     "━━━━━━━━━━━━━━━━━━━━━\n"
     "⚙️ <b>Current Mode:</b> {mode_str}\n"
-    "🛡️ <b>Always Auto-Removed:</b> <code>@usernames</code>, <code>links</code> & <code>symbols</code>\n"
+    "🛡️ <b>Always Auto-Removed:</b> <code>Stylish Fonts</code>, <code>@usernames</code>, <code>links</code> & <code>symbols</code>\n"
     "🔢 <b>Total Active Words:</b> <code>{count}</code>\n\n"
     "📋 <b>Active Words Removed From Buttons:</b>\n{words_display}\n"
     "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -337,16 +341,12 @@ async def is_global_admin(user_id: int) -> bool:
 
 
 async def is_user_banned(user_id: int) -> bool:
+    """Fast 0ms RAM ban check via temp.BANNED_USERS."""
     if not user_id:
         return False
     if hasattr(temp, "BANNED_USERS") and int(user_id) in temp.BANNED_USERS:
         return True
-    if _plugin_db is None or not hasattr(_plugin_db, "is_banned"):
-        return False
-    try:
-        return bool(await _plugin_db.is_banned(user_id))
-    except Exception:
-        return False
+    return False
 
 
 def create_btn(
@@ -605,9 +605,11 @@ def format_script_text(
 
 
 # ============================================================
-# ⚙️ MONGODB & SHARED STATE HELPERS
+# ⚙️ MONGODB & CACHED PM SETTINGS HELPERS
 # ============================================================
 pm_db = cw_db = _BOT_DB = None
+_PM_SETTINGS_CACHE: Tuple[float, Dict[str, Any]] = (0.0, {})
+
 try:
     _DB_CLIENT = AsyncIOMotorClient(info.DATABASE_URI)
     _BOT_DB = _DB_CLIENT[info.DATABASE_NAME]
@@ -617,7 +619,12 @@ except Exception as e:
     logger.error(f"Failed to init databases in uibuttons: {e}")
 
 
-async def get_pm_settings() -> Dict[str, Any]:
+async def get_pm_settings(force_refresh: bool = False) -> Dict[str, Any]:
+    global _PM_SETTINGS_CACHE
+    now = time.time()
+    if not force_refresh and _PM_SETTINGS_CACHE[1] and (now - _PM_SETTINGS_CACHE[0]) < 120:
+        return _PM_SETTINGS_CACHE[1]
+
     default_settings = {
         "enabled": True,
         "reply_admins": True,
@@ -634,17 +641,19 @@ async def get_pm_settings() -> Dict[str, Any]:
         return default_settings
     try:
         settings = await pm_db.find_one({"id": "pm_config"})
-        if not settings:
-            return default_settings
-        return {**default_settings, **settings}
+        res = {**default_settings, **settings} if settings else default_settings
+        _PM_SETTINGS_CACHE = (now, res)
+        return res
     except Exception as e:
         logger.error(f"Error fetching PM settings: {e}")
         return default_settings
 
 
 async def save_pm_settings(key: str, value: Any):
+    global _PM_SETTINGS_CACHE
     if pm_db is not None:
         await pm_db.update_one({"id": "pm_config"}, {"$set": {key: value}}, upsert=True)
+    _PM_SETTINGS_CACHE = (0.0, {})
 
 
 async def get_clean_words_state() -> Tuple[bool, List[str]]:
@@ -664,10 +673,10 @@ def _invalidate_pm_filter_clean_cache():
         import plugins.pm_filter as _pmf
 
         _pmf._CLEAN_WORDS_CACHE = (0.0, DEFAULT_CLEAN_WORDS)
-        if hasattr(_pmf, "GLOBAL_SEARCH_CACHE") and hasattr(
-            _pmf.GLOBAL_SEARCH_CACHE, "_data"
-        ):
-            _pmf.GLOBAL_SEARCH_CACHE._data.clear()
+        for cache_attr in ("GLOBAL_SEARCH_CACHE", "POOL_SEARCH_CACHE"):
+            c_obj = getattr(_pmf, cache_attr, None)
+            if c_obj and hasattr(c_obj, "_data"):
+                c_obj._data.clear()
     except Exception:
         pass
 
@@ -1647,7 +1656,7 @@ async def build_cleanwords_panel_ui() -> Tuple[str, InlineKeyboardMarkup]:
     words_display = (
         ", ".join(f"<code>{html.escape(str(w))}</code>" for w in words)
         if words
-        else "<i>None (Only @usernames, links & symbols are stripped)</i>"
+        else "<i>None (Only Stylish Fonts, @usernames, links & symbols are stripped)</i>"
     )
     tpl = getattr(script, "CLEANFILE_TXT", DEFAULT_CLEANFILE_TXT)
     try:
@@ -1666,7 +1675,7 @@ async def build_cleanwords_panel_ui() -> Tuple[str, InlineKeyboardMarkup]:
         text = text.replace(
             f"⚙️ <b>Current Mode:</b> {mode_str}\n",
             f"⚙️ <b>Current Mode:</b> {mode_str}\n"
-            f"🛡️ <b>Always Auto-Removed:</b> <code>@usernames</code>, <code>links</code> & <code>symbols</code>\n",
+            f"🛡️ <b>Always Auto-Removed:</b> <code>Stylish Fonts</code>, <code>@usernames</code>, <code>links</code> & <code>symbols</code>\n",
         )
     return text, get_cleanwords_keyboard(use_default=use_default)
 
@@ -2009,8 +2018,26 @@ async def help_category_shortcut_cmds(client: Client, message: Message):
     )
 
 
+async def _register_user_in_bg(client: Client, user):
+    """Registers a new PM user in the background so file delivery is never delayed."""
+    if not user or user.id in _KNOWN_USERS_RAM:
+        return
+    _KNOWN_USERS_RAM.add(user.id)
+    try:
+        if not await _db.is_user_exist(user.id):
+            await _db.add_user(user.id, user.first_name)
+            if LOG_CHANNEL:
+                await safe_send_message(
+                    client,
+                    LOG_CHANNEL,
+                    script.LOG_TEXT_P.format(user.id, user.mention),
+                )
+    except Exception:
+        pass
+
+
 # ============================================================
-# 🎯 MAIN START & HELP COMMANDS
+# 🎯 MAIN START & HELP COMMANDS (INSTANT FILE DELIVERY)
 # ============================================================
 @Client.on_message(filters.command(["start", "help"]) & filters.incoming)
 async def start_and_help_cmd(client: Client, message: Message):
@@ -2032,6 +2059,57 @@ async def start_and_help_cmd(client: Client, message: Message):
 
     if message.from_user and await is_user_banned(uid):
         return
+
+    # ⚡ FAST-PATH FOR FILE & SEARCH DEEP-LINKS (0ms Overhead):
+    # Skip UI sync and run user registration in background so file sends immediately!
+    if (
+        message.chat.type == enums.ChatType.PRIVATE
+        and len(message.command) == 2
+        and message.command[1] not in ["help", "error", "okay", "hehe"]
+    ):
+        if message.from_user and uid not in _KNOWN_USERS_RAM:
+            asyncio.create_task(_register_user_in_bg(client, message.from_user))
+
+        cmd_data = message.command[1]
+        from plugins.commands import run_force_sub, send_requested_file
+
+        if cmd_data == "subscribe":
+            return await run_force_sub(client, message)
+
+        if cmd_data.startswith("search_"):
+            query_str = re.sub(
+                r"[_+\-]+", " ", cmd_data.replace("search_", "", 1)
+            ).strip()
+            try:
+                from plugins.pm_filter import auto_filter
+
+                message.text = query_str
+                message.command = None
+                await auto_filter(client, message)
+            except Exception as e:
+                logger.error(f"Search interceptor failed: {e}")
+                await safe_reply_text(
+                    message,
+                    f"🔍 <b>Search Query:</b> <code>{query_str}</code>\n\nSend this text in our group to search!",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            return
+
+        kk, file_id = cmd_data.split("_", 1) if "_" in cmd_data else (False, False)
+        pre = ("checksubp" if kk == "filep" else "checksub") if kk else False
+        target_file_id = file_id or cmd_data
+
+        status = await run_force_sub(client, message, file_id=target_file_id, mode=pre)
+        if not status:
+            return
+
+        return await send_requested_file(
+            client=client,
+            user_id=uid,
+            file_id=target_file_id,
+            ident=kk or "file",
+            reply_target=message,
+        )
 
     await _ensure_ui_synced()
 
@@ -2108,7 +2186,6 @@ async def start_and_help_cmd(client: Client, message: Message):
             parse_mode=enums.ParseMode.HTML,
             disable_web_page_preview=True,
         )
-        await asyncio.sleep(2)
         if not await _db.get_chat(message.chat.id):
             try:
                 total = await client.get_chat_members_count(message.chat.id)
@@ -2125,99 +2202,43 @@ async def start_and_help_cmd(client: Client, message: Message):
             await _db.add_chat(message.chat.id, message.chat.title)
         return
 
-    # Register new private user
-    if message.from_user and not await _db.is_user_exist(message.from_user.id):
-        await _db.add_user(message.from_user.id, message.from_user.first_name)
-        if LOG_CHANNEL:
+    # Register new private user in background
+    if message.from_user and uid not in _KNOWN_USERS_RAM:
+        asyncio.create_task(_register_user_in_bg(client, message.from_user))
+
+    # Standard /start with no deep-link payload
+    raw_text = format_script_text(
+        getattr(script, "START_TXT", "Hello {mention}!"),
+        mention=user_mention,
+        uname=bot_uname,
+        bname=b_name,
+    )
+    final_text, final_keyboard = safe_parse_text_and_markup(
+        raw_text, await get_start_keyboard(client, uid)
+    )
+    db_img = getattr(info, "START_IMG", None)
+    photo_to_send = db_img if db_img else (random.choice(PICS) if PICS else None)
+
+    try:
+        if photo_to_send and len(final_text) <= 1024:
             try:
-                await safe_send_message(
-                    client,
-                    LOG_CHANNEL,
-                    script.LOG_TEXT_P.format(
-                        message.from_user.id, message.from_user.mention
-                    ),
+                return await message.reply_photo(
+                    photo=photo_to_send,
+                    caption=final_text,
+                    reply_markup=final_keyboard,
+                    parse_mode=enums.ParseMode.HTML,
                 )
             except Exception:
                 pass
-
-    # Standard /start with no deep-link payload
-    if len(message.command) != 2 or message.command[1] in ["error", "okay", "hehe"]:
-        raw_text = format_script_text(
-            getattr(script, "START_TXT", "Hello {mention}!"),
-            mention=user_mention,
-            uname=bot_uname,
-            bname=b_name,
+        await safe_reply_text(
+            message,
+            text=final_text,
+            reply_markup=final_keyboard,
+            parse_mode=enums.ParseMode.HTML,
+            disable_web_page_preview=True,
         )
-        final_text, final_keyboard = safe_parse_text_and_markup(
-            raw_text, await get_start_keyboard(client, uid)
-        )
-        db_img = getattr(info, "START_IMG", None)
-        photo_to_send = db_img if db_img else (random.choice(PICS) if PICS else None)
-
-        try:
-            if photo_to_send and len(final_text) <= 1024:
-                try:
-                    return await message.reply_photo(
-                        photo=photo_to_send,
-                        caption=final_text,
-                        reply_markup=final_keyboard,
-                        parse_mode=enums.ParseMode.HTML,
-                    )
-                except Exception:
-                    pass
-            await safe_reply_text(
-                message,
-                text=final_text,
-                reply_markup=final_keyboard,
-                parse_mode=enums.ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
-        except (UserIsBlocked, PeerIdInvalid):
-            pass
-        return
-
-    cmd_data = message.command[1]
-
-    # Delegate file delivery & ForceSub checks to plugins/commands.py
-    from plugins.commands import run_force_sub, send_requested_file
-
-    if cmd_data == "subscribe":
-        return await run_force_sub(client, message)
-
-    # 1. HANDLE DIRECT SEARCH LINKS
-    if cmd_data.startswith("search_"):
-        query_str = re.sub(r"[_+\-]+", " ", cmd_data.replace("search_", "", 1)).strip()
-        try:
-            from plugins.pm_filter import auto_filter
-
-            message.text = query_str
-            message.command = None
-            await auto_filter(client, message)
-        except Exception as e:
-            logger.error(f"Search interceptor failed: {e}")
-            await safe_reply_text(
-                message,
-                f"🔍 <b>Search Query:</b> <code>{query_str}</code>\n\nSend this text in our group to search!",
-                parse_mode=enums.ParseMode.HTML,
-            )
-        return
-
-    # 2. HANDLE STANDARD FILE LINKS
-    kk, file_id = cmd_data.split("_", 1) if "_" in cmd_data else (False, False)
-    pre = ("checksubp" if kk == "filep" else "checksub") if kk else False
-    target_file_id = file_id or cmd_data
-
-    status = await run_force_sub(client, message, file_id=target_file_id, mode=pre)
-    if not status:
-        return
-
-    await send_requested_file(
-        client=client,
-        user_id=message.from_user.id,
-        file_id=target_file_id,
-        ident=kk or "file",
-        reply_target=message,
-    )
+    except (UserIsBlocked, PeerIdInvalid):
+        pass
 
 
 # ============================================================
@@ -3045,7 +3066,7 @@ async def interactive_help_actions_cb(client: Client, query: CallbackQuery):
         "pm_setbtn",
     ]:
         if action in ["pm_toggle", "pm_on", "pm_off"]:
-            cfg = await get_pm_settings()
+            cfg = await get_pm_settings(force_refresh=True)
             cur = bool(cfg.get("enabled", True))
             new_state = (not cur) if action == "pm_toggle" else (action == "pm_on")
             await save_pm_settings("enabled", new_state)
@@ -3054,7 +3075,7 @@ async def interactive_help_actions_cb(client: Client, query: CallbackQuery):
                 f"💬 PM Auto-Reply: {'ON ✅' if new_state else 'OFF ❌'}",
             )
         elif action == "pm_adm_toggle":
-            cfg = await get_pm_settings()
+            cfg = await get_pm_settings(force_refresh=True)
             new_adm = not bool(cfg.get("reply_admins", True))
             await save_pm_settings("reply_admins", new_adm)
             await safe_answer(
