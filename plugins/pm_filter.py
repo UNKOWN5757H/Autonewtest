@@ -38,7 +38,23 @@ from database.ia_filterdb import Media as _Media
 from database.ia_filterdb import get_search_results
 from utils import get_settings, get_size, parse_text_and_markup, temp
 
-# Safe optional imports
+# Safe optional imports for multi-database health helpers
+try:
+    from database.ia_filterdb import (
+        get_all_healthy_read_dbs,
+        get_writable_System_db,
+        mark_db_error,
+    )
+except ImportError:
+    get_all_healthy_read_dbs = None
+    get_writable_System_db = None
+    mark_db_error = None
+
+try:
+    from database.ia_filterdb import Media2 as _Media2
+except ImportError:
+    _Media2 = None
+
 try:
     from database.plugin_dbs import plugin_db as _plugin_db
 except ImportError:
@@ -71,6 +87,9 @@ logger.setLevel(ERROR)
 
 # Strong reference set so Python's garbage collector never cancels sleeping auto-delete tasks
 AUTO_DELETE_TASKS = set()
+
+# Track unhealthy DB collections so a broken SECONDDB_URI doesn't cause 20-second freezes
+_DEAD_COLLECTIONS: Dict[str, float] = {}
 
 # ============================================================
 # 🔤 STYLISH UNICODE FONT STRIPPER / NORMALIZER TABLE
@@ -123,11 +142,8 @@ def strip_stylish_fonts(text: str) -> str:
     """
     if not text:
         return ""
-    # 1. Translate small-caps and direct mathematical alphanumerics
     text = text.translate(_STYLISH_SMALL_CAPS_MAP)
 
-    # 2. Normalize compatibility characters (NFKC converts fullwidth, bold, circled, etc. to ASCII)
-    # while keeping Indic scripts (0x0900 - 0x0D7F) intact
     out_chars = []
     for ch in text:
         cp = ord(ch)
@@ -677,7 +693,12 @@ cw_db = None
 pm_feat_db = None
 _BOT_DB = None
 try:
-    _DB_CLIENT = AsyncIOMotorClient(info.DATABASE_URI)
+    _DB_CLIENT = AsyncIOMotorClient(
+        info.DATABASE_URI,
+        serverSelectionTimeoutMS=4000,
+        connectTimeoutMS=4000,
+        socketTimeoutMS=8000,
+    )
     _BOT_DB = _DB_CLIENT[info.DATABASE_NAME]
     cw_db = _BOT_DB["clean_words"]
     pm_feat_db = _BOT_DB["pm_filter_features"]
@@ -703,6 +724,17 @@ _FEATURE_FLAGS_CACHE: Dict[str, Any] = {
 }
 
 
+def _get_writable_col(col_name: str, fallback_col: Any):
+    if callable(get_writable_System_db):
+        try:
+            target_db = get_writable_System_db()
+            if target_db is not None:
+                return target_db[col_name]
+        except Exception:
+            pass
+    return fallback_col
+
+
 async def get_feature_flags(force_refresh: bool = False) -> Tuple[bool, bool]:
     now = time.time()
     if not force_refresh and (now - _FEATURE_FLAGS_CACHE["ts"]) < 120:
@@ -718,8 +750,8 @@ async def get_feature_flags(force_refresh: bool = False) -> Tuple[bool, bool]:
                     doc.get("autotranslate", True)
                 )
                 _FEATURE_FLAGS_CACHE["multichoice"] = bool(doc.get("multichoice", True))
-        except Exception as e:
-            logger.error(f"get_feature_flags error: {e}")
+        except Exception:
+            pass
     _FEATURE_FLAGS_CACHE["ts"] = now
     return (
         bool(_FEATURE_FLAGS_CACHE["autotranslate"]),
@@ -730,13 +762,15 @@ async def get_feature_flags(force_refresh: bool = False) -> Tuple[bool, bool]:
 async def set_feature_flag(key: str, value: bool):
     _FEATURE_FLAGS_CACHE[key] = bool(value)
     _FEATURE_FLAGS_CACHE["ts"] = time.time()
-    if pm_feat_db is not None:
+    target_col = _get_writable_col("pm_filter_features", pm_feat_db)
+    if target_col is not None:
         try:
-            await pm_feat_db.update_one(
+            await target_col.update_one(
                 {"_id": "config"}, {"$set": {key: bool(value)}}, upsert=True
             )
-        except Exception as e:
-            logger.error(f"set_feature_flag error for {key}: {e}")
+        except Exception:
+            # RAM cache still updated even if MongoDB is 512MB/512MB full
+            pass
 
 
 async def get_clean_words() -> list:
@@ -807,15 +841,11 @@ def clean_filename(name: str, clean_words: list) -> str:
     if not name:
         return "File"
 
-    # 1. Normalize/strip stylish Unicode fonts first so @tags and custom words inside fancy fonts are caught
     name = strip_stylish_fonts(str(name))
-
-    # 2. Always strip URLs and any word starting with '@' (including surrounding brackets)
     name = re.sub(r"(?i)https?://\S+|t\.me/\S+|www\.\S+", " ", name)
     name = re.sub(r"[\[\(\{<]*@[a-zA-Z0-9_.\-]+[\]\)\}>]*", " ", name)
     name = re.sub(r"@\S+", " ", name)
 
-    # 3. Strip default extensions & tags if enabled
     if any(
         w.lower() in ["mkv", "sandalwood", "mp4", "avi", "webm", "zip", "rar"]
         for w in clean_words
@@ -823,7 +853,6 @@ def clean_filename(name: str, clean_words: list) -> str:
         name = re.sub(r"(?i)\[?@?sandalwood[^\]\s]*\]?", " ", name)
         name = re.sub(r"(?i)\b(sandalwood|mkv|mp4|avi|webm|zip|rar)\b", " ", name)
 
-    # 4. Strip custom configured words/phrases from Clean Filename Words Manager
     for word in clean_words:
         w_str = strip_stylish_fonts(str(word).strip())
         if not w_str or w_str == "@":
@@ -832,7 +861,6 @@ def clean_filename(name: str, clean_words: list) -> str:
             continue
         name = re.sub(rf"(?i){re.escape(w_str)}", " ", name)
 
-    # 5. Always strip symbols, brackets, and punctuation (keep letters, numbers, and Indic script)
     name = re.sub(r"[_.\-\+\[\]\(\)\{\}\|~`!#$%^&*=\\/:;\"'<>,?]+", " ", name)
     name = re.sub(r"[^\w\s\u0900-\u0D7F]", " ", name)
     name = re.sub(r"\s+", " ", name).strip()
@@ -1106,7 +1134,7 @@ def build_effective_search_query(base_query: str, state: dict) -> str:
 
 
 # ============================================================
-# 🔮 ULTRA-FAST SEARCH, KANNADA PRIORITY & DEDUPLICATION
+# 🔮 ULTRA-FAST SEARCH, FALLBACK DB ENGINE & DEDUPLICATION
 # ============================================================
 def sanitize_search_query(text: str, allow_translit: bool = True) -> str:
     if not text:
@@ -1157,7 +1185,82 @@ def extract_inline_lang_and_qual(raw_text: str) -> Tuple[Optional[str], Optional
     return detected_lang, detected_qual
 
 
+async def _direct_collection_search(
+    query: str, max_results: int = 10, offset: int = 0
+) -> Tuple[list, int, int]:
+    """
+    Fallback direct search on healthy Media collections if get_search_results() crashes
+    because one of the MongoDB clusters (e.g. SECOND_DATABASE_URI) has 'bad auth' or connection pool paused.
+    """
+    q_clean = query.strip()
+    if not q_clean:
+        return [], 0, 0
+
+    words = [re.escape(w) for w in re.split(r"\s+", q_clean) if w]
+    if not words:
+        return [], 0, 0
+
+    pattern_str = ".*".join(words)
+    regex = re.compile(pattern_str, re.IGNORECASE)
+    mongo_filter = (
+        {"$or": [{"file_name": regex}, {"caption": regex}]}
+        if getattr(info, "USE_CAPTION_FILTER", False)
+        else {"file_name": regex}
+    )
+
+    results = []
+    if callable(get_all_healthy_read_dbs):
+        for idx, target_db in get_all_healthy_read_dbs():
+            try:
+                docs = (
+                    await target_db[info.COLLECTION_NAME]
+                    .find(mongo_filter)
+                    .sort("_id", -1)
+                    .limit(max_results + offset)
+                    .to_list(length=max_results + offset)
+                )
+                if docs:
+                    results.extend(docs)
+            except Exception as e:
+                if callable(mark_db_error):
+                    mark_db_error(idx, e)
+                continue
+    else:
+        now = time.time()
+        for label, media_cls in (("media1", _Media), ("media2", _Media2)):
+            if media_cls is None or now < _DEAD_COLLECTIONS.get(label, 0.0):
+                continue
+            col = getattr(media_cls, "collection", media_cls)
+            try:
+                docs = (
+                    await col.find(mongo_filter)
+                    .sort("_id", -1)
+                    .limit(max_results + offset)
+                    .to_list(length=max_results + offset)
+                )
+                if docs:
+                    results.extend(docs)
+            except Exception as e:
+                err_s = str(e).lower()
+                if (
+                    "bad auth" in err_s
+                    or "authentication failed" in err_s
+                    or "paused" in err_s
+                ):
+                    _DEAD_COLLECTIONS[label] = now + 1800
+
+    total = len(results)
+    sliced = results[offset : offset + max_results]
+    next_off = offset + max_results if (offset + max_results) < total else 0
+    return sliced, next_off, total
+
+
 async def safe_search_db(query: str, max_results: int = 10, offset: int = 0):
+    if _DEAD_COLLECTIONS.get("get_search_results", 0.0) > time.time():
+        return await _direct_collection_search(
+            query, max_results=max_results, offset=offset
+        )
+
     try:
         return await get_search_results(
             query,
@@ -1172,12 +1275,25 @@ async def safe_search_db(query: str, max_results: int = 10, offset: int = 0):
                 query, max_results=max_results, offset=offset, filter=True
             )
         except TypeError:
-            return await get_search_results(
+            try:
+                return await get_search_results(
+                    query, max_results=max_results, offset=offset
+                )
+            except Exception:
+                _DEAD_COLLECTIONS["get_search_results"] = time.time() + 300
+                return await _direct_collection_search(
+                    query, max_results=max_results, offset=offset
+                )
+        except Exception:
+            _DEAD_COLLECTIONS["get_search_results"] = time.time() + 300
+            return await _direct_collection_search(
                 query, max_results=max_results, offset=offset
             )
-    except Exception as e:
-        logger.error(f"DB search error for '{query}': {e}")
-        return [], 0, 0
+    except Exception:
+        _DEAD_COLLECTIONS["get_search_results"] = time.time() + 300
+        return await _direct_collection_search(
+            query, max_results=max_results, offset=offset
+        )
 
 
 def _file_text(file_obj) -> str:
@@ -1228,7 +1344,9 @@ def _deduplicate_files(files: list, clean_words: list) -> list:
 
     for f in files:
         fid = str(
-            f.get("file_id", "") if isinstance(f, dict) else getattr(f, "file_id", "")
+            f.get("file_id", f.get("_id", ""))
+            if isinstance(f, dict)
+            else getattr(f, "file_id", getattr(f, "_id", ""))
         )
         if fid and fid in seen_ids:
             continue
@@ -1331,10 +1449,7 @@ async def smart_filtered_search(
                 continue
             matched.append(f)
 
-        # 1. Remove duplicate files (same normalized name + same size)
         deduped = _deduplicate_files(matched, clean_words)
-
-        # 2. Sort so Kannada matching files always appear first
         deduped.sort(key=lambda x: _score_file_relevance(x, base_query), reverse=True)
         POOL_SEARCH_CACHE.set(pool_cache_key, deduped)
 
@@ -1371,29 +1486,60 @@ async def get_cached_db_titles() -> List[str]:
     if db_titles is not None:
         return db_titles
 
-    try:
-        media_col = getattr(_Media, "collection", _Media)
-        sample_docs = (
-            await media_col.find({}, {"file_name": 1})
-            .sort("_id", -1)
-            .limit(1200)
-            .to_list(length=1200)
-        )
-        title_set = set()
-        for d in sample_docs:
-            fn = d.get("file_name", "")
-            if not fn:
+    title_set = set()
+    if callable(get_all_healthy_read_dbs):
+        for idx, target_db in get_all_healthy_read_dbs():
+            try:
+                sample_docs = (
+                    await target_db[info.COLLECTION_NAME]
+                    .find({}, {"file_name": 1})
+                    .sort("_id", -1)
+                    .limit(1000)
+                    .to_list(length=1000)
+                )
+                for d in sample_docs:
+                    fn = d.get("file_name", "")
+                    if not fn:
+                        continue
+                    clean_t = _extract_clean_movie_title(fn)
+                    if clean_t and len(clean_t) >= 2:
+                        title_set.add(clean_t)
+            except Exception as e:
+                if callable(mark_db_error):
+                    mark_db_error(idx, e)
                 continue
-            clean_t = _extract_clean_movie_title(fn)
-            if clean_t and len(clean_t) >= 2:
-                title_set.add(clean_t)
+    else:
+        now = time.time()
+        for label, media_cls in (("media1", _Media), ("media2", _Media2)):
+            if media_cls is None or now < _DEAD_COLLECTIONS.get(label, 0.0):
+                continue
+            try:
+                media_col = getattr(media_cls, "collection", media_cls)
+                sample_docs = (
+                    await media_col.find({}, {"file_name": 1})
+                    .sort("_id", -1)
+                    .limit(1000)
+                    .to_list(length=1000)
+                )
+                for d in sample_docs:
+                    fn = d.get("file_name", "")
+                    if not fn:
+                        continue
+                    clean_t = _extract_clean_movie_title(fn)
+                    if clean_t and len(clean_t) >= 2:
+                        title_set.add(clean_t)
+            except Exception as e:
+                err_s = str(e).lower()
+                if (
+                    "bad auth" in err_s
+                    or "authentication failed" in err_s
+                    or "paused" in err_s
+                ):
+                    _DEAD_COLLECTIONS[label] = now + 1800
 
-        db_titles = sorted(title_set)
-        FUZZY_TITLES_CACHE.set("titles", db_titles)
-        return db_titles
-    except Exception as e:
-        logger.error(f"get_cached_db_titles error: {e}")
-        return []
+    db_titles = sorted(title_set)
+    FUZZY_TITLES_CACHE.set("titles", db_titles)
+    return db_titles
 
 
 # ============================================================
@@ -1459,8 +1605,6 @@ async def get_did_you_mean_suggestions(
 
     scored_candidates.sort(key=lambda x: x[0], reverse=True)
 
-    # Zero-DB-Wait Selection: Titles in db_titles come directly from _Media,
-    # so we don't need 5 sequential DB queries here!
     unique_suggestions: List[str] = []
     seen_roots = set()
 
@@ -1601,7 +1745,6 @@ async def build_result_buttons(
     qual_btn_text = f"🎥 {active_qual}" if active_qual else "🎥"
 
     btn = [
-        # 1. Blue button: 🎖️Lᴀᴛᴇsᴛ Mᴏᴠɪᴇ Uᴘᴅᴀᴛᴇs🎖️
         [
             create_btn(
                 text="🎖️Lᴀᴛᴇsᴛ Mᴏᴠɪᴇ Uᴘᴅᴀᴛᴇs🎖️",
@@ -1609,7 +1752,6 @@ async def build_result_buttons(
                 style=BTN_PRIMARY,
             )
         ],
-        # No colour on Language, Quality, 🎞, 🔞 buttons
         [
             create_btn(
                 text=lang_btn_text,
@@ -1640,16 +1782,15 @@ async def build_result_buttons(
             ]
         )
 
-    # Attach any active Promotional Links configured via /addpromo
     promos = await get_active_promos()
     for p in promos[:2]:
         btn.append([create_btn(text=p["text"], url=p["url"])])
 
     for file in files:
         file_id = str(
-            file.get("file_id", "")
+            file.get("file_id", file.get("_id", ""))
             if isinstance(file, dict)
-            else getattr(file, "file_id", "")
+            else getattr(file, "file_id", getattr(file, "_id", ""))
         )
         raw_name = str(
             file.get("file_name", "Unknown")
@@ -1925,7 +2066,6 @@ async def auto_filter(client: Client, msg: Message):
         ]:
             return
 
-        # Fetch flags, bot settings, and group settings concurrently in 0ms from cache
         (autotranslate_on, multichoice_on), b_set, settings = await asyncio.gather(
             get_feature_flags(),
             get_bot_settings(),
@@ -2303,7 +2443,6 @@ async def filter_menu_callbacks(bot: Client, query: CallbackQuery):
             show_alert=True,
         )
 
-    # 🔙 User clicked the bottom "⬅️ Back" button to return to the Multi-Choice ("Did You Mean?") list
     if action == "dymback":
         suggestions = SUGGESTIONS_CACHE.get(key)
         if not suggestions:
@@ -2334,7 +2473,6 @@ async def filter_menu_callbacks(bot: Client, query: CallbackQuery):
             pass
         return await safe_answer(query, "⬅️ Back to Multi-Choice suggestions!")
 
-    # 💡 User clicked a "Did You Mean?" movie suggestion button
     if action == "dym":
         try:
             sug_idx = int(parts[3])
@@ -2423,7 +2561,6 @@ async def filter_menu_callbacks(bot: Client, query: CallbackQuery):
 
     state = get_filter_state(key)
 
-    # 1. Open Language Selection Menu (No button colours)
     if action == "flang":
         cur_lang = state.get("lang")
         btn_rows = []
@@ -2459,7 +2596,6 @@ async def filter_menu_callbacks(bot: Client, query: CallbackQuery):
             pass
         return await safe_answer(query, "🔊 Select your preferred language:")
 
-    # 2. Open Quality Selection Menu (No button colours)
     if action == "fqual":
         cur_qual = state.get("qual")
         btn_rows = []
@@ -2495,7 +2631,6 @@ async def filter_menu_callbacks(bot: Client, query: CallbackQuery):
             pass
         return await safe_answer(query, "🎥 Select your preferred quality:")
 
-    # 3. Apply Selected Language / Quality, Reset to Normal Filter, or Return to Results
     new_lang = state.get("lang")
     new_qual = state.get("qual")
 
@@ -3349,7 +3484,6 @@ async def manual_filters(client: Client, message: Message, text=False) -> bool:
 
     reply_id = message.reply_to_message.id if message.reply_to_message else message.id
 
-    # Cache manual filter keywords per group for 120 seconds (0ms latency)
     grp_key = str(group_id)
     keywords = MANUAL_FILTERS_CACHE.get(grp_key)
     if keywords is None:
