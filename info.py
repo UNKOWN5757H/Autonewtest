@@ -19,15 +19,31 @@ API_HASH = environ.get("API_HASH", "4906b3f8f198ec0e24edb2c197677678")
 BOT_TOKEN = environ.get("BOT_TOKEN", "").strip()
 PORT = int(environ.get("PORT", "8080"))
 
+# ⚡ HIGH-SPEED CONCURRENCY & INDEXING SETTINGS (50+ WORKERS)
+WORKERS = int(environ.get("WORKERS", "64"))
+INDEX_SPEED = float(environ.get("INDEX_SPEED", "0.0"))
+INDEX_BATCH_SIZE = int(environ.get("INDEX_BATCH_SIZE", "200"))
+
+# 🤖 MULTI-BOT MASTER-WORKER ARCHITECTURE SETTINGS (/bots)
+MULTI_BOT_ENABLED = is_enabled(environ.get("MULTI_BOT_ENABLED", "True"), True)
+MAX_WORKER_BOTS = int(environ.get("MAX_WORKER_BOTS", "10"))
+WORKER_BOT_TOKENS = [
+    tok.strip()
+    for tok in re.split(r"[\s,]+", environ.get("WORKER_BOT_TOKENS", "").strip())
+    if tok.strip()
+]
+
 CACHE_TIME = int(environ.get("CACHE_TIME", 300))
 USE_CAPTION_FILTER = is_enabled(environ.get("USE_CAPTION_FILTER", "False"), False)
 PICS = (environ.get("PICS", "https://iili.io/COHUHil.jpg")).split()
 
 # ⚡ GLOBAL AUTO-DELETE SETTINGS (in seconds)
 FILE_AUTO_DELETE = int(environ.get("FILE_AUTO_DELETE", 1800))
-BUTTON_AUTO_DELETE = int(environ.get("BUTTON_AUTO_DELETE", 1800))
+BUTTON_AUTO_DELETE = int(environ.get("BUTTON_AUTO_DELETE", 300))
 BUTTON_DEL = BUTTON_AUTO_DELETE
-AUTO_DELETE_TIME = int(environ.get("AUTO_DELETE_TIME", 1800))
+BUTTON_DELETE_TIME = BUTTON_AUTO_DELETE
+AUTO_DELETE_TIME = int(environ.get("AUTO_DELETE_TIME", 300))
+IMDB_DELETETIME = AUTO_DELETE_TIME
 BROADCAST_DELETE_TIME = int(environ.get("BROADCAST_DELETE_TIME", 86400))
 AUTO_DELETE = is_enabled(environ.get("AUTO_DELETE", "True"), True)
 
@@ -61,12 +77,21 @@ AUTH_USERS = (auth_users + ADMINS) if auth_users else []
 auth_grp = environ.get("AUTH_GROUP")
 AUTH_GROUPS = [int(ch) for ch in auth_grp.split()] if auth_grp else None
 
+# 💾 3-DATABASE AUTO-SHARDING & LOW-STORAGE CONFIGURATION (3 x 512MB = 1.5GB)
 DATABASE_URI = environ.get(
     "DATABASE_URI",
     "mongodb+srv://Rashmika1:Rashmika@cluster0.2rfx8ak.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-)
+).strip()
+SECOND_DATABASE_URI = environ.get("SECOND_DATABASE_URI", "").strip()
+THIRD_DATABASE_URI = environ.get("THIRD_DATABASE_URI", "").strip()
+
 DATABASE_NAME = environ.get("DATABASE_NAME", "ClusterQ")
+SECOND_DATABASE_NAME = environ.get("SECOND_DATABASE_NAME", "auto2")
+THIRD_DATABASE_NAME = environ.get("THIRD_DATABASE_NAME", "auto3")
 COLLECTION_NAME = environ.get("COLLECTION_NAME", "VersionQ")
+
+# Automatically switch to next DB when current DB reaches 480 MB (prevents 512 MB lock)
+MAX_DB_SIZE_MB = int(environ.get("MAX_DB_SIZE_MB", "480"))
 
 auth_channel = environ.get("AUTH_CHANNEL", "sandalwood_kannada_moviesz")
 AUTH_CHANNEL = (
@@ -76,7 +101,7 @@ REQ_CHANNEL = environ.get("REQ_CHANNEL", "+pCz5eoun5Zk5YzRl")
 REQ_CHANNEL = (
     int(REQ_CHANNEL) if REQ_CHANNEL and id_pattern.search(REQ_CHANNEL) else False
 )
-JOIN_REQS_DB = environ.get("JOIN_REQS_DB", DATABASE_URI)
+JOIN_REQS_DB = environ.get("JOIN_REQS_DB", SECOND_DATABASE_URI or DATABASE_URI)
 
 IS_FSUB_ENABLED = is_enabled(environ.get("IS_FSUB_ENABLED", "True"), True)
 FSUB_MAX_COUNT = int(environ.get("FSUB_MAX_COUNT", 0))
@@ -90,7 +115,7 @@ SINGLE_BUTTON = is_enabled(environ.get("SINGLE_BUTTON", "True"), False)
 
 CUSTOM_FILE_CAPTION = environ.get(
     "CUSTOM_FILE_CAPTION",
-    """<b>{file_name} \n \n𝗝𝗼𝗶𝗻 𝗢𝘂𝗿 𝗖𝗵𝗮𝗻𝗻𝗲𝗹𝘀 ⚡️\n𝐌𝐚𝐢𝐧 𝐂𝐡𝐚𝐧𝐧𝐞𝐥 👇\nhttps://t.me/sandalwood_kannada_moviesz \n𝐑𝐞𝐪𝐮𝐞𝐬𝐭 𝐌𝐨𝐯𝐢𝐞𝐬 👇\nhttps://t.me/Sandalwood_Kannada_Group</b>""",
+    """<b>𝗝𝗼𝗶𝗻 𝗢𝘂𝗿 𝗖𝗵𝗮𝗻𝗻𝗲𝗹𝘀 ⚡️\n𝐌𝐚𝐢𝐧 𝐂𝐡𝐚𝐧𝐧𝐞𝐥 👇\nhttps://t.me/sandalwood_kannada_moviesz \n𝐑𝐞𝐪𝐮𝐞𝐬𝐭 𝐌𝐨𝐯𝐢𝐞𝐬 👇\nhttps://t.me/Sandalwood_Kannada_Group</b>""",
 )
 BATCH_FILE_CAPTION = environ.get("BATCH_FILE_CAPTION", CUSTOM_FILE_CAPTION)
 CAPTION_PLUS = environ.get("CAPTION_PLUS", None)
@@ -111,9 +136,15 @@ ABOUT_IMG = environ.get("ABOUT_IMG", None)
 AUTO_IMG = environ.get("AUTO_IMG", None)
 INFO_MSG = environ.get("INFO_MSG", None)
 INFO_IMG = environ.get("INFO_IMG", None)
-DEL_MSG = environ.get("DEL_MSG", None)
+DEL_MSG = environ.get(
+    "DEL_MSG",
+    "<b>Successfully deleted your file, if you want request again in group.</b>",
+)
 DEL_IMG = environ.get("DEL_IMG", None)
-FSUB_MSG = environ.get("FSUB_MSG", None)
+FSUB_MSG = (
+    environ.get("FSUB_MSG", "").strip()
+    or "<b>⚠️ Please join the channels below to get your file!</b>"
+)
 FSUB_IMG = environ.get("FSUB_IMG", None)
 
 IMDB_TEMPLATE = environ.get(
