@@ -52,9 +52,21 @@ except ImportError:
     _std_make_inactive = None
 
 try:
-    from database.ia_filterdb import Media as _Media
+    from database.ia_filterdb import (
+        Media as _Media,
+        db as _db1_handle,
+        db2 as _db2_handle,
+        db3 as _db3_handle,
+        get_all_dbs_stats,
+        nuke_all_media_dbs,
+    )
 except ImportError:
     _Media = None
+    _db1_handle = None
+    _db2_handle = None
+    _db3_handle = None
+    get_all_dbs_stats = None
+    nuke_all_media_dbs = None
 
 try:
     from database.plugin_dbs import plugin_db as _plugin_db
@@ -256,6 +268,12 @@ def get_size_str(bytes_size) -> str:
 
 
 async def get_total_files_count() -> int:
+    if callable(get_all_dbs_stats):
+        try:
+            st = await get_all_dbs_stats()
+            return int(st.get("total_files", 0))
+        except Exception:
+            pass
     if _Media is None:
         return 0
     try:
@@ -738,15 +756,20 @@ async def optimize_db_cmd(client: Client, message: Message):
 
     sts = await safe_reply_text(
         message,
-        "⚡ <b>Optimizing MongoDB Indexes...</b>",
+        "⚡ <b>Optimizing MongoDB Indexes across all configured databases...</b>",
         parse_mode=enums.ParseMode.HTML,
     )
     created_indexes = []
+    col_name = getattr(info, "COLLECTION_NAME", "VersionQ")
     try:
-        if _Media is not None:
-            col = getattr(_Media, "collection", _Media)
-            idx1 = await col.create_index([("file_name", 1)])
-            created_indexes.append(f"Media: {idx1}")
+        for idx, db_h in ((1, _db1_handle), (2, _db2_handle), (3, _db3_handle)):
+            if db_h is not None:
+                try:
+                    idx_res = await db_h[col_name].create_index([("file_name", 1)])
+                    created_indexes.append(f"DB {idx} Media: {idx_res}")
+                except Exception:
+                    pass
+
         if _BOT_DB is not None:
             idx2 = await _BOT_DB["active_connections"].create_index([("user_id", 1)])
             created_indexes.append(f"Connections: {idx2}")
@@ -1499,18 +1522,67 @@ async def confirm_restart_cb(bot: Client, query: CallbackQuery):
 
 
 # ============================================================
-# 📊 BOT DATABASE STATS & CLEANUP
+# 📊 3-DATABASE LIVE STATS & INSTANT CLEANUP
 # ============================================================
+def _format_single_db_block(label: str, db_info: dict) -> str:
+    if not db_info.get("configured"):
+        return f"🗄️ <b>{label}:</b> <code>⚪ Not Configured</code>\n"
+    status = db_info.get("status", "🟢 Connected")
+    files = db_info.get("files", 0)
+    used_str = get_size_str(db_info.get("used_bytes", 0))
+    free_str = get_size_str(db_info.get("free_bytes", 0))
+    return (
+        f"🗄️ <b>{label}:</b> <code>{status}</code>\n"
+        f"├ 📁 <b>Files:</b> <code>{files:,}</code>\n"
+        f"├ 💾 <b>Used:</b> <code>{used_str} / 512.00 MB</code>\n"
+        f"└ 💿 <b>Free:</b> <code>{free_str}</code>\n"
+    )
+
+
 async def _build_db_stats_text() -> str:
-    total_users = await _db.total_users_count()
-    total_chats = await _db.total_chat_count()
+    total_users = 0
+    total_chats = 0
+    try:
+        total_users, total_chats = await asyncio.gather(
+            _db.total_users_count(), _db.total_chat_count()
+        )
+    except Exception:
+        pass
+
+    if callable(get_all_dbs_stats):
+        st = await get_all_dbs_stats()
+        db1 = st.get("db1", {})
+        db2 = st.get("db2", {})
+        db3 = st.get("db3", {})
+        total_files = st.get("total_files", 0)
+        total_used = get_size_str(st.get("total_used_bytes", 0))
+        total_free = get_size_str(st.get("total_free_bytes", 0))
+        total_cap = get_size_str(st.get("total_capacity_bytes", 536870912))
+        active_idx = st.get("active_db_index", 1)
+
+        return (
+            f"📊 <b>3-Database Cluster Statistics</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👥 <b>Total Users:</b> <code>{total_users:,}</code>\n"
+            f"🏘 <b>Total Groups:</b> <code>{total_chats:,}</code>\n"
+            f"📁 <b>Combined Total Files:</b> <code>{total_files:,}</code>\n"
+            f"⚡ <b>Active Write DB:</b> <code>Database {active_idx}</code>\n"
+            f"💾 <b>Total Used:</b> <code>{total_used} / {total_cap}</code>\n"
+            f"💿 <b>Total Free:</b> <code>{total_free}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{_format_single_db_block('Database 1 (Primary)', db1)}\n"
+            f"{_format_single_db_block('Database 2 (Secondary)', db2)}\n"
+            f"{_format_single_db_block('Database 3 (Tertiary)', db3)}"
+            f"━━━━━━━━━━━━━━━━━━━━━"
+        )
+
     total_files = await get_total_files_count()
     db_size = await _db.get_db_size()
     return (
         f"📊 <b>Bot Database Statistics</b>\n━━━━━━━━━━━━━━\n"
-        f"👥 <b>Total Users:</b> <code>{total_users}</code>\n"
-        f"🏘 <b>Total Groups:</b> <code>{total_chats}</code>\n"
-        f"📁 <b>Total Files:</b> <code>{total_files}</code>\n"
+        f"👥 <b>Total Users:</b> <code>{total_users:,}</code>\n"
+        f"🏘 <b>Total Groups:</b> <code>{total_chats:,}</code>\n"
+        f"📁 <b>Total Files:</b> <code>{total_files:,}</code>\n"
         f"💾 <b>DB Size:</b> <code>{get_size_str(db_size)}</code>\n━━━━━━━━━━━━━━"
     )
 
@@ -1529,7 +1601,7 @@ async def bot_stats_cmd(bot: Client, message: Message):
 
     status_msg = await safe_reply_text(
         message,
-        "⏳ <b>Fetching Database Stats...</b>",
+        "⏳ <b>Fetching 3-Database Live Stats...</b>",
         parse_mode=enums.ParseMode.HTML,
     )
     try:
@@ -1564,7 +1636,7 @@ async def bot_stats_cmd(bot: Client, message: Message):
 async def adm_stats_refresh_cb(client: Client, query: CallbackQuery):
     if not await is_global_admin(query.from_user.id):
         return await safe_answer(query, "❌ Unauthorized.", show_alert=True)
-    await safe_answer(query, "Refreshing stats...")
+    await safe_answer(query, "Refreshing 3-Database stats...")
     try:
         stats_text = await _build_db_stats_text()
         markup = InlineKeyboardMarkup(
@@ -1704,7 +1776,7 @@ async def cancel_cleanusers_cb(client: Client, query: CallbackQuery):
 
 
 # ============================================================
-# 🔥 DATABASE WIPE COMMANDS
+# 🔥 INSTANT 3-DATABASE WIPE COMMANDS (/clearfiles, /clearusers)
 # ============================================================
 @Client.on_message(
     filters.command(["clearfiles", "clearusers"]) & filters.incoming,
@@ -1723,10 +1795,15 @@ async def wipe_prompt_cmd(bot: Client, message: Message):
 
     cmd = message.command[0].lower()
     action = "files" if cmd == "clearfiles" else "users"
+    target_desc = (
+        "ALL MOVIE FILES ACROSS ALL 3 DATABASES (DB 1, DB 2 & DB 3)"
+        if action == "files"
+        else "ALL USERS"
+    )
 
     await safe_reply_text(
         message,
-        f"⚠️ <b>WARNING!</b> ⚠️\nAre you sure you want to permanently delete <b>ALL {action.upper()}</b> in your database?",
+        f"⚠️ <b>WARNING!</b> ⚠️\nAre you sure you want to permanently delete <b>{target_desc}</b>?",
         reply_markup=InlineKeyboardMarkup(
             [
                 [
@@ -1748,16 +1825,29 @@ async def nuke_callbacks(bot: Client, query: CallbackQuery):
     if not await is_global_admin(uid):
         return await safe_answer(query, "❌ Unauthorized.", show_alert=True)
 
-    await safe_answer(query, "Processing request...", show_alert=False)
+    await safe_answer(query, "Wiping database...", show_alert=False)
     action = query.data.split("_")[1]
     await safe_edit_text(
         query.message,
-        "⏳ <b>Executing request... This may take a moment.</b>",
+        "⏳ <b>Wiping database... Please wait a second.</b>",
         parse_mode=enums.ParseMode.HTML,
     )
 
     try:
         if action == "files":
+            if callable(nuke_all_media_dbs):
+                summary = await nuke_all_media_dbs()
+                total_del = summary.get("total_deleted", 0)
+                cleared_list = ", ".join(summary.get("dbs_cleared", [])) or "DB 1, DB 2, DB 3"
+                return await safe_edit_text(
+                    query.message,
+                    f"✅ <b>All Media Databases Wiped Instantly!</b>\n\n"
+                    f"🗑️ <b>Total Deleted Files:</b> <code>{total_del:,}</code>\n"
+                    f"🗄️ <b>Databases Cleared:</b> <code>{cleared_list}</code>\n"
+                    f"💿 <b>Storage Status:</b> <code>100% Freed</code>",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+
             if _Media is None:
                 return await safe_edit_text(
                     query.message,
@@ -1765,29 +1855,41 @@ async def nuke_callbacks(bot: Client, query: CallbackQuery):
                     parse_mode=enums.ParseMode.HTML,
                 )
             collection = getattr(_Media, "collection", _Media)
-            res = await collection.delete_many({})
-            count = getattr(res, "deleted_count", "All")
+            await collection.drop()
             await safe_edit_text(
                 query.message,
-                f"✅ <b>Database Wiped!</b>\n🗑 <b>Deleted Files:</b> <code>{count}</code>",
+                "✅ <b>Database Wiped Instantly!</b>\n🗑 <b>Deleted Files:</b> <code>All</code>",
                 parse_mode=enums.ParseMode.HTML,
             )
+
         elif action == "users":
             collection = getattr(_db, "col", _db)
-            res = await collection.delete_many({})
-            count = getattr(res, "deleted_count", "All")
+            count = 0
+            try:
+                count = await collection.estimated_document_count()
+            except Exception:
+                pass
+            try:
+                await collection.drop()
+            except Exception:
+                res = await collection.delete_many({})
+                count = getattr(res, "deleted_count", count)
             await safe_edit_text(
                 query.message,
-                f"✅ <b>Database Wiped!</b>\n🗑 <b>Deleted Users:</b> <code>{count}</code>",
+                f"✅ <b>Users Database Wiped!</b>\n🗑 <b>Deleted Users:</b> <code>{count:,}</code>",
                 parse_mode=enums.ParseMode.HTML,
             )
+
         elif action == "fsub":
             if _plugin_db is not None and hasattr(_plugin_db, "clear_fsub_users"):
                 await _plugin_db.clear_fsub_users()
             if _BOT_DB is not None:
                 for col_name in await _BOT_DB.list_collection_names():
                     if "fsub" in col_name.lower() or "join_req" in col_name.lower():
-                        await _BOT_DB[col_name].delete_many({})
+                        try:
+                            await _BOT_DB[col_name].drop()
+                        except Exception:
+                            await _BOT_DB[col_name].delete_many({})
             await safe_edit_text(
                 query.message,
                 "✅ <b>Force Subscribe Database has been completely cleared.</b>",
