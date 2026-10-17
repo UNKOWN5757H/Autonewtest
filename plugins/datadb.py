@@ -26,10 +26,9 @@ from pyrogram.types import (
 )
 
 import info
+from database.ia_filterdb import DYNAMIC_DB_META, clear_all_dynamic_db_entries
+from database.ia_filterdb import db as _primary_db
 from database.ia_filterdb import (
-    DYNAMIC_DB_META,
-    clear_all_dynamic_db_entries,
-    db as _primary_db,
     extract_db_label_from_uri,
     get_all_configured_dbs,
     get_all_dbs_stats,
@@ -201,9 +200,15 @@ def _preload_env_uris_if_present() -> List[Dict[str, str]]:
         (3, "THIRD_DATABASE_URI", "THIRD_DATABASE_NAME", "Env DB 3"),
     ):
         raw_uri = (getattr(info, attr_uri, "") or "").strip()
-        if raw_uri and raw_uri.startswith(("mongodb://", "mongodb+srv://")) and raw_uri != info.DATABASE_URI:
+        if (
+            raw_uri
+            and raw_uri.startswith(("mongodb://", "mongodb+srv://"))
+            and raw_uri != info.DATABASE_URI
+        ):
             auto_lbl, parsed_db = extract_db_label_from_uri(raw_uri, idx)
-            cfg_db_name = (getattr(info, attr_name, "") or parsed_db or info.DATABASE_NAME).strip()
+            cfg_db_name = (
+                getattr(info, attr_name, "") or parsed_db or info.DATABASE_NAME
+            ).strip()
             env_entries.append(
                 {
                     "id": make_db_id(raw_uri),
@@ -270,7 +275,11 @@ async def load_datadb_config(force_refresh: bool = False) -> Dict[str, Any]:
                         enabled_state = bool(doc.get("enabled", True))
 
                     # If this latest doc explicitly cleared all URLs, respect it
-                    if doc_ts >= latest_ts and doc.get("cleared_all") and not doc.get("urls"):
+                    if (
+                        doc_ts >= latest_ts
+                        and doc.get("cleared_all")
+                        and not doc.get("urls")
+                    ):
                         merged_by_id.clear()
                         continue
 
