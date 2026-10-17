@@ -283,7 +283,12 @@ async def nuke_all_media_dbs() -> Dict[str, Any]:
             summary["dbs_cleared"].append(f"DB {idx} ({count:,} files)")
 
         # Also clean up any genlink / checkpoint temp collections on this DB
-        for extra_col in ("genlink_files", "genlink_batches", "index_checkpoints", "index_resume"):
+        for extra_col in (
+            "genlink_files",
+            "genlink_batches",
+            "index_checkpoints",
+            "index_resume",
+        ):
             try:
                 await target_db[extra_col].drop()
             except Exception:
@@ -349,10 +354,9 @@ async def _fetch_single_db_stats(idx: int, target_db: Any) -> Dict[str, Any]:
         used_bytes = max(data_size + index_size, storage_size)
         free_bytes = max(0, quota_limit - used_bytes)
 
-        is_full = (
-            used_bytes >= (500 * 1024 * 1024)
-            or time.time() < _QUOTA_FULL_DBS.get(idx, 0.0)
-        )
+        is_full = used_bytes >= (
+            500 * 1024 * 1024
+        ) or time.time() < _QUOTA_FULL_DBS.get(idx, 0.0)
         status = "⚠️ Quota Full" if is_full else "🟢 Connected"
         _DEAD_READ_DBS.pop(idx, None)
 
