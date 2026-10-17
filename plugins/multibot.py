@@ -27,10 +27,22 @@ from pyrogram.types import (
 
 import info
 
+# Safe optional imports for multi-database health helpers
+try:
+    from database.ia_filterdb import (
+        get_all_healthy_read_dbs,
+        get_writable_System_db,
+        mark_db_error,
+    )
+except ImportError:
+    get_all_healthy_read_dbs = None
+    get_writable_System_db = None
+    mark_db_error = None
+
 logger = getLogger(__name__)
 logger.setLevel(INFO)
 
-MAX_WORKER_BOTS = 10
+MAX_WORKER_BOTS = int(getattr(info, "MAX_WORKER_BOTS", 10) or 10)
 
 # ============================================================
 # 🛡️ PYROGRAM v2.2.26 COMPATIBILITY & BUTTON HELPERS
@@ -142,11 +154,18 @@ async def is_global_admin(user_id: int) -> bool:
 
 
 # ============================================================
-# 🤖 MONGODB & LIVE WORKER BOT POOL ENGINE
+# 🤖 QUOTA-SAFE MONGODB & LIVE WORKER BOT POOL ENGINE
 # ============================================================
 _mb_col = None
+_MB_DB_QUOTA_FULL_UNTIL: float = 0.0
+
 try:
-    _DB_CLIENT = AsyncIOMotorClient(info.DATABASE_URI)
+    _DB_CLIENT = AsyncIOMotorClient(
+        info.DATABASE_URI,
+        serverSelectionTimeoutMS=4000,
+        connectTimeoutMS=4000,
+        socketTimeoutMS=8000,
+    )
     _BOT_DB = _DB_CLIENT[info.DATABASE_NAME]
     _mb_col = _BOT_DB["multibot_workers"]
 except Exception as e:
@@ -154,7 +173,7 @@ except Exception as e:
 
 # In-memory state & running Pyrogram worker clients
 _MULTIBOT_CONFIG_CACHE: Dict[str, Any] = {
-    "enabled": True,
+    "enabled": bool(getattr(info, "MULTI_BOT_ENABLED", True)),
     "bots": [],  # List of dicts: {"bot_id": int, "name": str, "username": str, "token": str}
 }
 _CONFIG_LOADED = False
@@ -165,40 +184,112 @@ _WORKER_LOCK = asyncio.Lock()
 _MB_WAITING_INPUT: Dict[int, Dict[str, Any]] = {}
 
 
+def _get_writable_mb_col():
+    if callable(get_writable_System_db):
+        try:
+            target_db = get_writable_System_db()
+            if target_db is not None:
+                return target_db["multibot_workers"]
+        except Exception:
+            pass
+    return _mb_col
+
+
+def _is_quota_or_auth_err(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return (
+        "space quota" in s
+        or "over your space" in s
+        or "8000" in s
+        or "bad auth" in s
+        or "authentication failed" in s
+        or "paused" in s
+    )
+
+
 async def load_multibot_config(force_refresh: bool = False) -> Dict[str, Any]:
     global _CONFIG_LOADED, _MULTIBOT_CONFIG_CACHE
     if _CONFIG_LOADED and not force_refresh:
         return _MULTIBOT_CONFIG_CACHE
 
-    if _mb_col is not None:
+    doc = None
+    if callable(get_all_healthy_read_dbs):
+        for idx, target_db in get_all_healthy_read_dbs():
+            try:
+                doc = await target_db["multibot_workers"].find_one(
+                    {"_id": "master_config"}
+                )
+                if doc:
+                    break
+            except Exception as e:
+                if callable(mark_db_error):
+                    mark_db_error(idx, e)
+                continue
+    elif _mb_col is not None:
         try:
             doc = await _mb_col.find_one({"_id": "master_config"})
-            if doc:
-                _MULTIBOT_CONFIG_CACHE["enabled"] = bool(doc.get("enabled", True))
-                _MULTIBOT_CONFIG_CACHE["bots"] = list(doc.get("bots", []))
-        except Exception as e:
-            logger.error(f"load_multibot_config error (using RAM cache): {e}")
+        except Exception:
+            pass
+
+    if doc:
+        _MULTIBOT_CONFIG_CACHE["enabled"] = bool(doc.get("enabled", True))
+        _MULTIBOT_CONFIG_CACHE["bots"] = list(doc.get("bots", []))
+
+    # Also merge any tokens pre-configured via info.WORKER_BOT_TOKENS env var
+    env_tokens = getattr(info, "WORKER_BOT_TOKENS", []) or []
+    existing_tokens = {b.get("token") for b in _MULTIBOT_CONFIG_CACHE["bots"]}
+    for tok in env_tokens:
+        tok_str = str(tok).strip()
+        if (
+            tok_str
+            and tok_str not in existing_tokens
+            and len(_MULTIBOT_CONFIG_CACHE["bots"]) < MAX_WORKER_BOTS
+        ):
+            bot_id_prefix = tok_str.split(":", 1)[0]
+            if bot_id_prefix.isdigit():
+                _MULTIBOT_CONFIG_CACHE["bots"].append(
+                    {
+                        "bot_id": int(bot_id_prefix),
+                        "name": f"Worker {bot_id_prefix[-4:]}",
+                        "username": "",
+                        "token": tok_str,
+                    }
+                )
+                existing_tokens.add(tok_str)
 
     _CONFIG_LOADED = True
     return _MULTIBOT_CONFIG_CACHE
 
 
 async def save_multibot_config():
-    if _mb_col is not None:
+    """
+    Saves Multi-Bot configuration to a writable DB if available.
+    Never spams error logs if the 512MB MongoDB cluster is full (RAM cache stays active).
+    """
+    global _MB_DB_QUOTA_FULL_UNTIL
+    now = time.time()
+    if now < _MB_DB_QUOTA_FULL_UNTIL:
+        return
+
+    target_col = _get_writable_mb_col()
+    if target_col is not None:
         try:
-            await _mb_col.update_one(
+            await target_col.update_one(
                 {"_id": "master_config"},
                 {
                     "$set": {
                         "enabled": bool(_MULTIBOT_CONFIG_CACHE.get("enabled", True)),
                         "bots": list(_MULTIBOT_CONFIG_CACHE.get("bots", [])),
-                        "updated_at": time.time(),
+                        "updated_at": now,
                     }
                 },
                 upsert=True,
             )
         except Exception as e:
-            logger.error(f"save_multibot_config error (RAM still updated): {e}")
+            if _is_quota_or_auth_err(e):
+                # Mute DB write attempts for 30 minutes when 512MB quota is full
+                _MB_DB_QUOTA_FULL_UNTIL = now + 1800
+                return
 
 
 async def start_single_worker(bot_data: Dict[str, Any]) -> Optional[Client]:
@@ -223,6 +314,13 @@ async def start_single_worker(bot_data: Dict[str, Any]) -> Optional[Client]:
             sleep_threshold=60,
         )
         await worker_client.start()
+        if getattr(worker_client, "me", None):
+            bot_data["name"] = worker_client.me.first_name or bot_data.get(
+                "name", f"Bot {bot_id}"
+            )
+            bot_data["username"] = worker_client.me.username or bot_data.get(
+                "username", ""
+            )
         ACTIVE_WORKER_CLIENTS[bot_id] = worker_client
         logger.info(
             f"✅ Started Multi-Bot Worker: {bot_data.get('name')} (@{bot_data.get('username')})"
@@ -283,7 +381,6 @@ async def get_indexing_clients(main_bot: Client) -> List[Client]:
         return [main_bot]
 
     workers = await ensure_all_workers_started()
-    # Combine Main Bot + Worker Bots (deduplicated by bot token/ID)
     all_clients: List[Client] = [main_bot]
     seen_ids = {getattr(main_bot.me, "id", 0) if getattr(main_bot, "me", None) else 0}
 
@@ -489,7 +586,6 @@ async def build_bot_list_panel() -> Tuple[str, InlineKeyboardMarkup]:
         dot = "🟢" if is_online else "⚪"
         lines.append(f"{idx}. {dot} <b>{b_name}</b> (@{b_uname}) — <code>{b_id}</code>")
 
-        # Exact layout requested: Bot name | Remove bot
         buttons.append(
             [
                 create_btn(
@@ -514,7 +610,6 @@ async def build_bot_list_panel() -> Tuple[str, InlineKeyboardMarkup]:
         "⚠️ <i>Remember to make all worker bots Admin in your indexing channel!</i>"
     )
 
-    # Bottom row: Remove all bots + Back
     buttons.append(
         [
             create_btn(
@@ -719,7 +814,6 @@ async def multibot_callback_handler(client: Client, query: CallbackQuery):
             return
 
         raw_text = resp.text.strip()
-        # Delete the message containing sensitive bot tokens immediately for security
         try:
             await resp.delete()
         except Exception:
@@ -780,7 +874,6 @@ async def multibot_callback_handler(client: Client, query: CallbackQuery):
                     "username": me.username or "",
                     "token": tok,
                 }
-                # Replace if same bot_id existed with old token
                 cfg["bots"] = [
                     b for b in cfg["bots"] if int(b.get("bot_id", 0)) != int(me.id)
                 ]
