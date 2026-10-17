@@ -316,7 +316,7 @@ def _is_quota_exceeded_error(err: Exception) -> bool:
 
 async def fast_save_media_batch(media_list: list) -> Tuple[int, int, int, bool]:
     """
-    Saves a batch of media objects at maximum speed across DB 1, DB 2, and DB 3.
+    Saves a batch of media objects at maximum speed across Primary DB + all /datadb URLs.
     Returns: (saved_count, duplicate_count, error_count, all_dbs_quota_full)
     """
     if not media_list:
@@ -388,9 +388,16 @@ async def fast_save_media_batch(media_list: list) -> Tuple[int, int, int, bool]:
 
 
 # ============================================================
-# 🛠️ MEDIA FILTER EXTRACTOR & TIME FORMATTER
+# 🛠️ MEDIA FILTER EXTRACTOR (SAVES chat_id + msg_id FOR SELF-HEALING)
 # ============================================================
-def extract_media_from_message(message: Message, media_filter: str = "all"):
+def extract_media_from_message(
+    message: Message, media_filter: str = "all", override_chat_id: Optional[int] = None
+):
+    """
+    Extracts the media object and attaches `chat_id` and `msg_id` so even if a
+    Worker Bot indexes the file, the Main Bot can fetch a fresh `file_id` directly
+    from the source channel without ever getting [400 MEDIA_EMPTY]!
+    """
     if not message or getattr(message, "empty", False) or not message.media:
         return None, "empty"
 
@@ -421,7 +428,50 @@ def extract_media_from_message(message: Message, media_filter: str = "all"):
 
     media.file_type = message.media.value
     media.caption = message.caption or ""
+
+    # Attach source channel chat_id and message_id so Main Bot can always recover the file
+    src_cid = override_chat_id or (message.chat.id if message.chat else None)
+    if src_cid:
+        media.chat_id = int(src_cid)
+    if getattr(message, "id", None):
+        media.msg_id = int(message.id)
+
     return media, "ok"
+
+
+# ============================================================
+# 📡 LIVE CHANNEL AUTO-INDEXER (INDEXES NEW CHANNEL UPLOADS INSTANTLY)
+# ============================================================
+def _get_auto_index_channels() -> List[int]:
+    raw_ch = getattr(info, "CHANNELS", [])
+    if isinstance(raw_ch, (str, int)):
+        raw_ch = str(raw_ch).replace(",", " ").split()
+    elif isinstance(raw_ch, (list, tuple, set)):
+        raw_ch = list(raw_ch)
+    else:
+        raw_ch = []
+    return [int(x) for x in raw_ch if str(x).strip().lstrip("-").isdigit()]
+
+
+@Client.on_message(
+    filters.channel & (filters.document | filters.video | filters.audio),
+    group=-5,
+)
+async def live_auto_index_channel_files(client: Client, message: Message):
+    if not message.chat:
+        return
+    allowed_channels = _get_auto_index_channels()
+    if allowed_channels and message.chat.id not in allowed_channels:
+        return
+
+    media_obj, status_code = extract_media_from_message(
+        message, "all", override_chat_id=message.chat.id
+    )
+    if status_code == "ok" and media_obj is not None:
+        try:
+            await fast_save_media_batch([media_obj])
+        except Exception as e:
+            logger.error(f"Live auto-index error in {message.chat.id}: {e}")
 
 
 def format_eta(seconds: float) -> str:
@@ -520,7 +570,7 @@ async def freedb_command_handler(client: Client, message: Message):
                 await col.drop_indexes()
             except Exception:
                 pass
-            await col.update_many({}, {"$unset": {"file_id_raw": "", "mime_type": ""}})
+            await col.update_many({}, {"$unset": {"mime_type": ""}})
         await safe_edit_text(
             status_msg,
             "✅ <b>Dropped redundant indexes & compacted media documents!</b>",
@@ -910,6 +960,14 @@ async def run_distributed_indexing(
         temp.CANCEL = False
         start_time = time.time()
 
+        # Ensure all dynamic /datadb URLs are loaded before indexing starts
+        try:
+            from plugins.datadb import load_datadb_config
+
+            await load_datadb_config()
+        except Exception:
+            pass
+
         # 1. Discover all active bots (Main Bot + Unlimited Worker Bots from /bots)
         candidate_clients = await get_indexing_clients(main_bot)
         usable_clients, skipped_bots = await _verify_worker_channel_access(
@@ -1025,7 +1083,7 @@ async def run_distributed_indexing(
                         local_deleted += 1
                         continue
                     media_obj, status_code = extract_media_from_message(
-                        msg, media_filter
+                        msg, media_filter, override_chat_id=int(chat_id)
                     )
                     if status_code == "ok" and media_obj is not None:
                         media_batch.append(media_obj)
@@ -1118,14 +1176,14 @@ async def run_distributed_indexing(
         if stats["quota_full"]:
             await safe_edit_text(
                 status_msg,
-                f"⚠️ <b>Indexing Paused: MongoDB Storage Quota Reached (512 MB)!</b>\n"
+                f"⚠️ <b>Indexing Paused: All Configured MongoDB Clusters Reached 512 MB!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"✅ <b>Saved Before Full:</b> <code>{stats['saved']:,}</code>\n"
                 f"📊 <b>Processed:</b> <code>{stats['processed']:,} / {total_range:,}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"💡 <b>How to Fix Immediately:</b>\n"
-                f"1️⃣ Send <code>/freedb</code> to drop heavy indexes & shrink documents by 65%, OR\n"
-                f"2️⃣ Add <code>SECOND_DATABASE_URI</code> / <code>THIRD_DATABASE_URI</code> in your environment variables for 1.5 GB storage!",
+                f"1️⃣ Send <code>/datadb</code> and click <b>Add url</b> to add more MongoDB URLs, OR\n"
+                f"2️⃣ Send <code>/freedb</code> to drop heavy indexes & shrink documents!",
             )
             return
 
