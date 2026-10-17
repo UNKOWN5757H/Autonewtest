@@ -31,11 +31,32 @@ logger.setLevel(logging.ERROR)
 # ============================================================
 _DB_STYLISH_MAP: Dict[int, str] = {}
 for _sc_k, _sc_v in (
-    ("ᴀ", "a"), ("ʙ", "b"), ("ᴄ", "c"), ("ᴅ", "d"), ("ᴇ", "e"), ("ꜰ", "f"),
-    ("ɢ", "g"), ("ʜ", "h"), ("ɪ", "i"), ("ᴊ", "j"), ("ᴋ", "k"), ("ʟ", "l"),
-    ("ᴍ", "m"), ("ɴ", "n"), ("ᴏ", "o"), ("ᴘ", "p"), ("ǫ", "q"), ("ʀ", "r"),
-    ("ꜱ", "s"), ("ᴛ", "t"), ("ᴜ", "u"), ("ᴠ", "v"), ("ᴡ", "w"), ("x", "x"),
-    ("ʏ", "y"), ("ᴢ", "z"),
+    ("ᴀ", "a"),
+    ("ʙ", "b"),
+    ("ᴄ", "c"),
+    ("ᴅ", "d"),
+    ("ᴇ", "e"),
+    ("ꜰ", "f"),
+    ("ɢ", "g"),
+    ("ʜ", "h"),
+    ("ɪ", "i"),
+    ("ᴊ", "j"),
+    ("ᴋ", "k"),
+    ("ʟ", "l"),
+    ("ᴍ", "m"),
+    ("ɴ", "n"),
+    ("ᴏ", "o"),
+    ("ᴘ", "p"),
+    ("ǫ", "q"),
+    ("ʀ", "r"),
+    ("ꜱ", "s"),
+    ("ᴛ", "t"),
+    ("ᴜ", "u"),
+    ("ᴠ", "v"),
+    ("ᴡ", "w"),
+    ("x", "x"),
+    ("ʏ", "y"),
+    ("ᴢ", "z"),
 ):
     _DB_STYLISH_MAP[ord(_sc_k)] = _sc_v
 
@@ -49,13 +70,32 @@ for _i in range(26):
     _DB_STYLISH_MAP[0x1F1E6 + _i] = chr(ord("A") + _i)
 
 for _start_cp, _base_ch, _cnt in (
-    (0x1D400, "A", 26), (0x1D41A, "a", 26), (0x1D434, "A", 26), (0x1D44E, "a", 26),
-    (0x1D468, "A", 26), (0x1D482, "a", 26), (0x1D49C, "A", 26), (0x1D4B6, "a", 26),
-    (0x1D4D0, "A", 26), (0x1D4EA, "a", 26), (0x1D504, "A", 26), (0x1D51E, "a", 26),
-    (0x1D538, "A", 26), (0x1D552, "a", 26), (0x1D56C, "A", 26), (0x1D586, "a", 26),
-    (0x1D5A0, "A", 26), (0x1D5BA, "a", 26), (0x1D5D4, "A", 26), (0x1D5EE, "a", 26),
-    (0x1D608, "A", 26), (0x1D622, "a", 26), (0x1D63C, "A", 26), (0x1D656, "a", 26),
-    (0x1D670, "A", 26), (0x1D68A, "a", 26),
+    (0x1D400, "A", 26),
+    (0x1D41A, "a", 26),
+    (0x1D434, "A", 26),
+    (0x1D44E, "a", 26),
+    (0x1D468, "A", 26),
+    (0x1D482, "a", 26),
+    (0x1D49C, "A", 26),
+    (0x1D4B6, "a", 26),
+    (0x1D4D0, "A", 26),
+    (0x1D4EA, "a", 26),
+    (0x1D504, "A", 26),
+    (0x1D51E, "a", 26),
+    (0x1D538, "A", 26),
+    (0x1D552, "a", 26),
+    (0x1D56C, "A", 26),
+    (0x1D586, "a", 26),
+    (0x1D5A0, "A", 26),
+    (0x1D5BA, "a", 26),
+    (0x1D5D4, "A", 26),
+    (0x1D5EE, "a", 26),
+    (0x1D608, "A", 26),
+    (0x1D622, "a", 26),
+    (0x1D63C, "A", 26),
+    (0x1D656, "a", 26),
+    (0x1D670, "A", 26),
+    (0x1D68A, "a", 26),
 ):
     for _i in range(_cnt):
         _DB_STYLISH_MAP[_start_cp + _i] = chr(ord(_base_ch) + _i)
@@ -415,7 +455,9 @@ class SafeMediaWrapper:
         if raw and len(str(raw)) > 30:
             self.full_file_id = str(raw)
         else:
-            self.full_file_id = encode_file_id(str(self._id or ""), str(self.file_ref or ""))
+            self.full_file_id = encode_file_id(
+                str(self._id or ""), str(self.file_ref or "")
+            )
 
     def get(self, key, default=None):
         return getattr(self, key, default)
@@ -425,7 +467,10 @@ class SafeMediaWrapper:
 
 
 async def update_cached_file_id(
-    short_id: str, new_raw_file_id: str, chat_id: Optional[int] = None, msg_id: Optional[int] = None
+    short_id: str,
+    new_raw_file_id: str,
+    chat_id: Optional[int] = None,
+    msg_id: Optional[int] = None,
 ):
     """
     Self-healing helper: when Main Bot refreshes a file_id (e.g. from a Worker Bot or channel),
