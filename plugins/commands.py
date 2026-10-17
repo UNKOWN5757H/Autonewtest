@@ -418,9 +418,7 @@ async def _recover_and_send_media(
     db_file_id = (
         file_obj.get("full_file_id", file_obj.get("file_id", short_id))
         if isinstance(file_obj, dict)
-        else getattr(
-            file_obj, "full_file_id", getattr(file_obj, "file_id", short_id)
-        )
+        else getattr(file_obj, "full_file_id", getattr(file_obj, "file_id", short_id))
     )
     file_type = (
         file_obj.get("file_type")
@@ -536,9 +534,7 @@ async def _recover_and_send_media(
                                 pass
 
                             if main_view and main_view.media:
-                                m_obj = getattr(
-                                    main_view, main_view.media.value, None
-                                )
+                                m_obj = getattr(main_view, main_view.media.value, None)
                                 new_main_fid = getattr(m_obj, "file_id", None)
                                 if new_main_fid:
                                     if callable(update_cached_file_id):
