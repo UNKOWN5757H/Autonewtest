@@ -28,12 +28,15 @@ from pyrogram.types import (
 import info
 
 try:
-    from database.ia_filterdb import db as _db1
-    from database.ia_filterdb import db2 as _db2
-    from database.ia_filterdb import db3 as _db3
-    from database.ia_filterdb import get_all_healthy_read_dbs, mark_db_error
+    from database.ia_filterdb import (
+        db as _db1,
+        get_all_configured_dbs,
+        get_all_healthy_read_dbs,
+        mark_db_error,
+    )
 except ImportError:
-    _db1 = _db2 = _db3 = None
+    _db1 = None
+    get_all_configured_dbs = None
     get_all_healthy_read_dbs = None
     mark_db_error = None
 
@@ -176,12 +179,21 @@ _MB_WAITING_INPUT: Dict[int, Dict[str, Any]] = {}
 
 
 def _get_all_candidate_dbs() -> List[Tuple[int, Any]]:
+    """Returns all configured databases (Primary DB + all /datadb URLs) even if Multi-DB search is toggled off."""
+    if callable(get_all_configured_dbs):
+        dbs = [
+            (idx, handle)
+            for idx, handle, _ in get_all_configured_dbs(include_when_disabled=True)
+            if handle is not None
+        ]
+        if dbs:
+            return dbs
     if callable(get_all_healthy_read_dbs):
         dbs = get_all_healthy_read_dbs()
         if dbs:
             return dbs
     out = []
-    for idx, d in ((1, _db1), (2, _db2), (3, _db3), (1, _FALLBACK_DB)):
+    for idx, d in ((1, _db1), (1, _FALLBACK_DB)):
         if d is not None and all(x[1] is not d for x in out):
             out.append((idx, d))
     return out
@@ -210,26 +222,42 @@ async def _free_temp_space_on_db(target_db: Any):
 
 async def load_multibot_config(force_refresh: bool = False) -> Dict[str, Any]:
     """
-    Loads and merges saved Worker Bots across ALL healthy databases (DB 1, DB 2, DB 3)
+    Loads and merges saved Worker Bots across Primary DB + all /datadb URLs
     plus any tokens in info.WORKER_BOT_TOKENS so no worker bots are ever lost on restart!
     """
     global _CONFIG_LOADED, _MULTIBOT_CONFIG_CACHE
     if _CONFIG_LOADED and not force_refresh:
         return _MULTIBOT_CONFIG_CACHE
 
+    # Ensure dynamic /datadb URLs are loaded first so we scan all extra databases too
+    try:
+        from plugins.datadb import load_datadb_config
+
+        await load_datadb_config()
+    except Exception:
+        pass
+
     merged_bots_by_id: Dict[int, Dict[str, Any]] = {}
     latest_updated_at = -1.0
     enabled_state = bool(_MULTIBOT_CONFIG_CACHE.get("enabled", True))
+    cleared_all_ts = -1.0
 
     for idx, target_db in _get_all_candidate_dbs():
         try:
-            doc = await target_db["multibot_workers"].find_one({"_id": "master_config"})
+            doc = await asyncio.wait_for(
+                target_db["multibot_workers"].find_one({"_id": "master_config"}),
+                timeout=5.0,
+            )
             if not doc:
                 continue
             doc_ts = float(doc.get("updated_at", 0.0) or 0.0)
             if doc_ts >= latest_updated_at:
                 latest_updated_at = doc_ts
                 enabled_state = bool(doc.get("enabled", True))
+
+            if doc.get("cleared_all") and not doc.get("bots"):
+                cleared_all_ts = max(cleared_all_ts, doc_ts)
+                continue
 
             for b in doc.get("bots", []):
                 if not isinstance(b, dict) or not b.get("token"):
@@ -247,11 +275,15 @@ async def load_multibot_config(force_refresh: bool = False) -> Dict[str, Any]:
                 mark_db_error(idx, e)
             continue
 
+    # If the most recent action was "Remove All Bots", honor it
+    if cleared_all_ts >= latest_updated_at and cleared_all_ts > 0:
+        merged_bots_by_id.clear()
+
     # Merge any existing in-memory bots not yet flushed
     for b in _MULTIBOT_CONFIG_CACHE.get("bots", []):
         if isinstance(b, dict) and b.get("token"):
             b_id = int(b["bot_id"])
-            if b_id not in merged_bots_by_id:
+            if b_id not in merged_bots_by_id and cleared_all_ts < latest_updated_at:
                 merged_bots_by_id[b_id] = b
 
     # Merge any tokens pre-configured via info.WORKER_BOT_TOKENS env var
@@ -277,9 +309,9 @@ async def load_multibot_config(force_refresh: bool = False) -> Dict[str, Any]:
     return _MULTIBOT_CONFIG_CACHE
 
 
-async def save_multibot_config():
+async def save_multibot_config(cleared_all: bool = False):
     """
-    Saves Multi-Bot configuration redundantly across ALL available databases (DB 1, DB 2, DB 3).
+    Saves Multi-Bot configuration redundantly across Primary DB AND all /datadb URLs.
     If a DB hits the 512MB quota, automatically purges temporary collections and retries
     so worker bots never disappear on restart!
     """
@@ -287,15 +319,19 @@ async def save_multibot_config():
     payload = {
         "enabled": bool(_MULTIBOT_CONFIG_CACHE.get("enabled", True)),
         "bots": list(_MULTIBOT_CONFIG_CACHE.get("bots", [])),
+        "cleared_all": bool(cleared_all),
         "updated_at": now,
     }
 
     for idx, target_db in _get_all_candidate_dbs():
         try:
-            await target_db["multibot_workers"].update_one(
-                {"_id": "master_config"},
-                {"$set": payload},
-                upsert=True,
+            await asyncio.wait_for(
+                target_db["multibot_workers"].update_one(
+                    {"_id": "master_config"},
+                    {"$set": payload},
+                    upsert=True,
+                ),
+                timeout=6.0,
             )
         except Exception as e:
             if _is_quota_err(e):
@@ -386,7 +422,6 @@ async def ensure_all_workers_started() -> List[Client]:
         clients: List[Client] = []
         updated_metadata = False
 
-        # Start in batches of 15 to prevent flooding Telegram login servers when 50+ bots are added
         for i in range(0, len(bots_list), 15):
             batch = bots_list[i : i + 15]
             results = await asyncio.gather(
@@ -535,7 +570,7 @@ async def build_main_bots_panel() -> Tuple[str, InlineKeyboardMarkup]:
         "💡 <b>How Multi-Bot Works for 10 Lakh+ Files:</b>\n"
         "• Make your Worker Bots <b>Admin</b> in your file channel.\n"
         "• When you run <code>/index</code>, the channel is automatically split into equal parts across all bots simultaneously!\n"
-        "• Saved permanently across your 3-Database MongoDB cluster."
+        "• Saved permanently across your Multi-Database cluster (<code>/datadb</code>)."
     )
 
     on_label = "✅ Multi Bot On" if enabled else "Multi Bot On"
@@ -689,7 +724,9 @@ async def build_bot_list_panel(page: int = 0) -> Tuple[str, InlineKeyboardMarkup
 # ============================================================
 # 🎯 /bots COMMAND & CALLBACK HANDLERS
 # ============================================================
-@Client.on_message(filters.command("bots") & filters.incoming, group=-2)
+@Client.on_message(
+    filters.command(["bots", "multibot", "workerbots"]) & filters.incoming, group=-2
+)
 async def bots_command_handler(client: Client, message: Message):
     uid = (
         message.from_user.id
@@ -792,7 +829,7 @@ async def multibot_callback_handler(client: Client, query: CallbackQuery):
 
         cfg["bots"] = new_bots
         await stop_single_worker(target_id)
-        await save_multibot_config()
+        await save_multibot_config(cleared_all=(len(new_bots) == 0))
 
         if len(new_bots) < before_len:
             await safe_answer(query, f"🗑️ Removed {removed_name}!", show_alert=True)
@@ -834,7 +871,7 @@ async def multibot_callback_handler(client: Client, query: CallbackQuery):
         cfg = await load_multibot_config()
         cfg["bots"] = []
         await stop_all_workers()
-        await save_multibot_config()
+        await save_multibot_config(cleared_all=True)
         await safe_answer(query, "🗑️ All Worker Bots Removed!", show_alert=True)
         text, markup = await build_main_bots_panel()
         return await safe_edit_text(query.message, text, reply_markup=markup)
@@ -941,7 +978,7 @@ async def multibot_callback_handler(client: Client, query: CallbackQuery):
             except Exception as e:
                 failed_reasons.append(str(e)[:60])
 
-        await save_multibot_config()
+        await save_multibot_config(cleared_all=False)
 
         if status_msg:
             summary_lines = []
