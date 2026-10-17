@@ -46,7 +46,9 @@ db3 = None
 # Unlimited dynamic databases added via /datadb command
 MULTI_DB_ENABLED: bool = True
 DYNAMIC_DB_CLIENTS: Dict[str, Any] = {}  # db_id -> AsyncIOMotorDatabase
-DYNAMIC_DB_META: List[Dict[str, Any]] = []  # [{"id": str, "name": str, "uri": str, "db_name": str}]
+DYNAMIC_DB_META: List[Dict[str, Any]] = (
+    []
+)  # [{"id": str, "name": str, "uri": str, "db_name": str}]
 
 # Circuit-breaker trackers so a broken/full DB never freezes the bot or spams logs
 _DEAD_READ_DBS: Dict[int, float] = {}  # db_idx -> cooldown_until_ts
