@@ -93,15 +93,58 @@ _STYLISH_CHAR_MAP: Dict[int, str] = {}
 
 # 1. Small Caps & Special Latin Stylized Letters
 _SMALL_CAPS_PAIRS = (
-    ("ᴀ", "a"), ("ʙ", "b"), ("ᴄ", "c"), ("ᴅ", "d"), ("ᴇ", "e"), ("ꜰ", "f"),
-    ("ɢ", "g"), ("ʜ", "h"), ("ɪ", "i"), ("ᴊ", "j"), ("ᴋ", "k"), ("ʟ", "l"),
-    ("ᴍ", "m"), ("ɴ", "n"), ("ᴏ", "o"), ("ᴘ", "p"), ("ǫ", "q"), ("ʀ", "r"),
-    ("ꜱ", "s"), ("ᴛ", "t"), ("ᴜ", "u"), ("ᴠ", "v"), ("ᴡ", "w"), ("x", "x"),
-    ("ʏ", "y"), ("ᴢ", "z"), ("ꞯ", "q"), ("w", "w"), ("ℓ", "l"), ("ℏ", "h"),
-    ("℘", "p"), ("ℑ", "I"), ("ℜ", "R"), ("ℨ", "Z"), ("ℬ", "B"), ("ℰ", "E"),
-    ("ℱ", "F"), ("ℋ", "H"), ("ℐ", "I"), ("ℒ", "L"), ("ℳ", "M"), ("ℛ", "R"),
-    ("ℯ", "e"), ("ℊ", "g"), ("ℴ", "o"), ("ℂ", "C"), ("ℍ", "H"), ("ℕ", "N"),
-    ("ℙ", "P"), ("ℚ", "Q"), ("ℝ", "R"), ("ℤ", "Z"),
+    ("ᴀ", "a"),
+    ("ʙ", "b"),
+    ("ᴄ", "c"),
+    ("ᴅ", "d"),
+    ("ᴇ", "e"),
+    ("ꜰ", "f"),
+    ("ɢ", "g"),
+    ("ʜ", "h"),
+    ("ɪ", "i"),
+    ("ᴊ", "j"),
+    ("ᴋ", "k"),
+    ("ʟ", "l"),
+    ("ᴍ", "m"),
+    ("ɴ", "n"),
+    ("ᴏ", "o"),
+    ("ᴘ", "p"),
+    ("ǫ", "q"),
+    ("ʀ", "r"),
+    ("ꜱ", "s"),
+    ("ᴛ", "t"),
+    ("ᴜ", "u"),
+    ("ᴠ", "v"),
+    ("ᴡ", "w"),
+    ("x", "x"),
+    ("ʏ", "y"),
+    ("ᴢ", "z"),
+    ("ꞯ", "q"),
+    ("w", "w"),
+    ("ℓ", "l"),
+    ("ℏ", "h"),
+    ("℘", "p"),
+    ("ℑ", "I"),
+    ("ℜ", "R"),
+    ("ℨ", "Z"),
+    ("ℬ", "B"),
+    ("ℰ", "E"),
+    ("ℱ", "F"),
+    ("ℋ", "H"),
+    ("ℐ", "I"),
+    ("ℒ", "L"),
+    ("ℳ", "M"),
+    ("ℛ", "R"),
+    ("ℯ", "e"),
+    ("ℊ", "g"),
+    ("ℴ", "o"),
+    ("ℂ", "C"),
+    ("ℍ", "H"),
+    ("ℕ", "N"),
+    ("ℙ", "P"),
+    ("ℚ", "Q"),
+    ("ℝ", "R"),
+    ("ℤ", "Z"),
 )
 for _sc_k, _sc_v in _SMALL_CAPS_PAIRS:
     if len(_sc_k) == 1:
@@ -120,19 +163,32 @@ for _i in range(26):
 
 # 3. Mathematical Alphanumeric Symbols (Bold, Italic, Script, Fraktur, Double-Struck, Sans, Mono)
 _MATH_ALPHA_RANGES = (
-    (0x1D400, "A", 26), (0x1D41A, "a", 26),
-    (0x1D434, "A", 26), (0x1D44E, "a", 26),
-    (0x1D468, "A", 26), (0x1D482, "a", 26),
-    (0x1D49C, "A", 26), (0x1D4B6, "a", 26),
-    (0x1D4D0, "A", 26), (0x1D4EA, "a", 26),
-    (0x1D504, "A", 26), (0x1D51E, "a", 26),
-    (0x1D538, "A", 26), (0x1D552, "a", 26),
-    (0x1D56C, "A", 26), (0x1D586, "a", 26),
-    (0x1D5A0, "A", 26), (0x1D5BA, "a", 26),
-    (0x1D5D4, "A", 26), (0x1D5EE, "a", 26),
-    (0x1D608, "A", 26), (0x1D622, "a", 26),
-    (0x1D63C, "A", 26), (0x1D656, "a", 26),
-    (0x1D670, "A", 26), (0x1D68A, "a", 26),
+    (0x1D400, "A", 26),
+    (0x1D41A, "a", 26),
+    (0x1D434, "A", 26),
+    (0x1D44E, "a", 26),
+    (0x1D468, "A", 26),
+    (0x1D482, "a", 26),
+    (0x1D49C, "A", 26),
+    (0x1D4B6, "a", 26),
+    (0x1D4D0, "A", 26),
+    (0x1D4EA, "a", 26),
+    (0x1D504, "A", 26),
+    (0x1D51E, "a", 26),
+    (0x1D538, "A", 26),
+    (0x1D552, "a", 26),
+    (0x1D56C, "A", 26),
+    (0x1D586, "a", 26),
+    (0x1D5A0, "A", 26),
+    (0x1D5BA, "a", 26),
+    (0x1D5D4, "A", 26),
+    (0x1D5EE, "a", 26),
+    (0x1D608, "A", 26),
+    (0x1D622, "a", 26),
+    (0x1D63C, "A", 26),
+    (0x1D656, "a", 26),
+    (0x1D670, "A", 26),
+    (0x1D68A, "a", 26),
 )
 for _start_cp, _base_ch, _cnt in _MATH_ALPHA_RANGES:
     for _i in range(_cnt):
@@ -1622,7 +1678,11 @@ async def get_did_you_mean_suggestions(
 def _build_dym_view(
     mention: str, raw_search: str, req: int, key: str, suggestions: List[str]
 ) -> Tuple[str, InlineKeyboardMarkup]:
-    safe_typed = html.escape(strip_stylish_fonts(raw_search).strip() or raw_search.strip()) if raw_search else "Movie"
+    safe_typed = (
+        html.escape(strip_stylish_fonts(raw_search).strip() or raw_search.strip())
+        if raw_search
+        else "Movie"
+    )
     dym_text = (
         f"<b>Hᴇʏ {mention} 👋🏻\n\n"
         f"🚫 Nᴏ Eхᴀᴄᴛ Mᴀᴛᴄʜ Fᴏʀ : <code>{safe_typed}</code>\n\n"
