@@ -1239,9 +1239,7 @@ def _deduplicate_files(files: list, clean_words: list) -> list:
             else getattr(f, "file_name", "")
         )
         fsize = int(
-            f.get("file_size", 0)
-            if isinstance(f, dict)
-            else getattr(f, "file_size", 0)
+            f.get("file_size", 0) if isinstance(f, dict) else getattr(f, "file_size", 0)
         )
         norm_name = _normalize_dedup_name(raw_name, clean_words)
         dedup_key = (norm_name, fsize)
@@ -1310,9 +1308,7 @@ async def smart_filtered_search(
 
     if deduped is None:
         pool_limit = 100 if (lang_code or qual_val) else 60
-        pool, _, _ = await safe_search_db(
-            base_query, max_results=pool_limit, offset=0
-        )
+        pool, _, _ = await safe_search_db(base_query, max_results=pool_limit, offset=0)
 
         if not pool and (lang_code or qual_val):
             effective_query = build_effective_search_query(base_query, state)
@@ -1542,9 +1538,7 @@ async def god_tier_search(
     if files:
         return files, offset, total, clean_query, was_transliterated
 
-    raw_alnum = re.sub(
-        r"[^a-zA-Z0-9]", " ", strip_stylish_fonts(query).lower()
-    )
+    raw_alnum = re.sub(r"[^a-zA-Z0-9]", " ", strip_stylish_fonts(query).lower())
     raw_alnum = re.sub(r"\s+", " ", raw_alnum).strip()
     if raw_alnum and raw_alnum != clean_query:
         files, offset, total = await smart_filtered_search(
