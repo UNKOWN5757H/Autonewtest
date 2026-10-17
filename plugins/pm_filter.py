@@ -73,6 +73,77 @@ logger.setLevel(ERROR)
 AUTO_DELETE_TASKS = set()
 
 # ============================================================
+# 🔤 STYLISH UNICODE FONT STRIPPER / NORMALIZER TABLE
+# ============================================================
+_STYLISH_SMALL_CAPS_MAP = str.maketrans(
+    "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ"
+    "𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙"
+    "𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝐣𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝐫𝐬𝐭𝐮𝐯𝐰𝐱𝐲𝐳"
+    "𝐴𝐵𝐶𝐷𝐸𝐹𝐺𝐻𝐼𝐽𝐾𝐿𝑀𝑁𝑂𝑃𝑄𝑅𝑆𝑇𝑈𝑉𝑊𝑋𝑌𝑍"
+    "𝑎𝑏𝑐𝑑𝑒𝑓𝑔ℎ𝑖𝑗𝑘𝑙𝑚𝑛𝑜𝑝𝑞𝑟𝑠𝑡𝑢𝑣𝑤𝑥𝑦𝑧"
+    "𝑨𝑩𝑪𝑫𝑬𝑭𝑮𝑯𝑰𝑱𝑲𝑳𝑴𝑵𝑶𝑷𝑸𝑹𝑺𝑻𝑼𝑽𝑾𝑿𝒀𝒁"
+    "𝒂𝒃𝒄𝒅𝒆𝒇𝒈𝒉𝒊𝒋𝒌𝒍𝒎𝒏𝒐𝒑𝒒𝒓𝒔𝒕𝒖𝒗𝒘𝒙𝒚𝒛"
+    "𝖠𝖡𝖢𝖣𝖤𝖥𝖦𝖧𝖨𝖩𝖪𝖫𝖬𝖭𝖮𝖯𝖰𝖱𝖲𝖳𝖴𝖵𝖶𝖷𝖸𝖹"
+    "𝖺𝖻𝖼𝖽𝖾𝖿𝗀𝗁𝗂𝗃𝗄𝗅𝗆𝗇𝗈𝗉𝗊𝗋𝗌𝗍𝗎𝗏𝗐𝗑𝗒𝗓"
+    "𝗔𝗕𝗖𝗗𝗘𝗙𝗚𝗛𝗜𝗝𝗞𝗟𝗠𝗡𝗢𝗣𝗤𝗥𝗦𝗧𝗨𝗩𝗪𝗫𝗬𝗭"
+    "𝗮𝗯𝗰𝗱𝗲𝗳𝗴𝗵𝗶𝗷𝗸𝗹𝗺𝗻𝗼𝗽𝗾𝗿𝘀𝘁𝘂𝘃𝘄𝘅𝘆𝘇"
+    "𝘈𝘉𝘊𝘋𝘌𝘍𝘎𝘏𝘐𝘑𝘒𝘓𝘔𝘕𝘖𝘗𝘘𝘙𝘚𝘛𝘜𝘝𝘞𝘟𝘠𝘡"
+    "𝘢𝘣𝘤𝘥𝘦𝘧𝘨𝘩𝘪𝘫𝘬𝘭𝘮𝘯𝘰𝘱𝘲𝘳𝘴𝘵𝘶𝘷𝘸𝘹🆈𝘻"
+    "𝘼𝘽𝘾𝘿𝙀𝙁𝙂𝙃𝙄𝙅𝙆𝙇𝙈𝙉𝙊𝙋 Q𝙍𝙎𝙏𝙐𝙑𝙒𝙓𝙔𝙕"
+    "𝙖𝙗𝙘𝙙𝙚𝙛𝙜𝙝𝙞𝙟𝙠𝙡𝙢𝙣𝙤𝙥𝙦𝙧𝙨𝙩𝙪𝙫𝙬𝙭𝙮𝙯"
+    "𝙰𝙱𝙲𝙳𝙴𝙵𝙶𝙷𝙸𝙹𝙺𝙻𝙼𝙽𝙾𝙿𝚀𝚁𝚂𝚃𝚄𝚅𝚆𝚇𝚈𝚉"
+    "𝚊𝚋𝚌𝚍𝚎𝚏𝚐𝚑𝚒𝚓𝚔𝚕𝚖𝚗𝚘𝚙𝚚𝚛𝚜𝚝𝚞𝚟𝚠𝚡𝚢𝚣"
+    "𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡𝟢𝟣𝟤𝟥𝟦𝟧𝟨𝟩𝟪𝟫𝟬𝟭𝟮𝟯𝟰𝟱𝟲𝟳𝟴𝟵𝟶𝟷𝟸𝟹𝟺𝟻𝟼𝟽𝟾𝟿",
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "01234567890123456789012345678901234567890123456789",
+)
+
+
+def strip_stylish_fonts(text: str) -> str:
+    """
+    Converts all fancy/stylish Unicode fonts (Mathematical Bold, Italic, Script,
+    Fraktur, Sans-Serif, Monospace, Fullwidth, Circled, Squared, Small-Caps)
+    into clean standard English letters and numbers.
+    """
+    if not text:
+        return ""
+    # 1. Translate small-caps and direct mathematical alphanumerics
+    text = text.translate(_STYLISH_SMALL_CAPS_MAP)
+
+    # 2. Normalize compatibility characters (NFKC converts fullwidth, bold, circled, etc. to ASCII)
+    # while keeping Indic scripts (0x0900 - 0x0D7F) intact
+    out_chars = []
+    for ch in text:
+        cp = ord(ch)
+        if 0x0900 <= cp <= 0x0D7F:
+            out_chars.append(ch)
+        elif cp > 127:
+            norm_ch = unicodedata.normalize("NFKD", ch)
+            ascii_only = "".join(c for c in norm_ch if ord(c) < 128)
+            if ascii_only:
+                out_chars.append(ascii_only)
+        else:
+            out_chars.append(ch)
+    return "".join(out_chars)
+
+
+# ============================================================
 # 🔗 CUSTOM EXTRA BUTTON LINKS (EDIT YOUR LINKS HERE)
 # ============================================================
 EXTRA_BTN_1_URL = getattr(
@@ -462,7 +533,7 @@ def create_btn(
 
 
 # ============================================================
-# ⚡ ULTRA-FAST IN-MEMORY CACHE SYSTEM
+# ⚡ ULTRA-FAST IN-MEMORY CACHE SYSTEM (ZERO DB LATENCY)
 # ============================================================
 class TTLCache:
     def __init__(self, maxsize: int = 2000, ttl: int = 1800):
@@ -470,10 +541,11 @@ class TTLCache:
         self._maxsize, self._ttl = maxsize, ttl
 
     def set(self, key: str, value: Any):
-        self._cleanup()
         if len(self._data) >= self._maxsize:
-            oldest_key = min(self._data, key=lambda k: self._data[k][0])
-            self._data.pop(oldest_key, None)
+            self._cleanup()
+            if len(self._data) >= self._maxsize:
+                oldest_key = next(iter(self._data))
+                self._data.pop(oldest_key, None)
         self._data[key] = (time.time() + self._ttl, value)
 
     def get(self, key: str) -> Optional[Any]:
@@ -486,17 +558,20 @@ class TTLCache:
 
     def _cleanup(self):
         now = time.time()
-        for k in [k for k, (exp, _) in self._data.items() if now > exp]:
+        for k in [k for k, (exp, _) in list(self._data.items()) if now > exp]:
             self._data.pop(k, None)
 
 
-GLOBAL_SEARCH_CACHE = TTLCache(maxsize=3000, ttl=600)
-BUTTONS_CACHE = TTLCache(maxsize=3000, ttl=1800)
-FILTER_STATE_CACHE = TTLCache(maxsize=3000, ttl=1800)
+GLOBAL_SEARCH_CACHE = TTLCache(maxsize=5000, ttl=900)
+POOL_SEARCH_CACHE = TTLCache(maxsize=3000, ttl=900)
+MANUAL_FILTERS_CACHE = TTLCache(maxsize=1000, ttl=120)
+AUTO_DELETE_TIMER_CACHE = TTLCache(maxsize=1000, ttl=120)
+BUTTONS_CACHE = TTLCache(maxsize=4000, ttl=1800)
+FILTER_STATE_CACHE = TTLCache(maxsize=4000, ttl=1800)
 SUGGESTIONS_CACHE = TTLCache(maxsize=2000, ttl=1800)
 DYM_QUERY_CACHE = TTLCache(maxsize=2000, ttl=1800)
-USER_LAST_REQ = TTLCache(maxsize=5000, ttl=60)
-FUZZY_TITLES_CACHE = TTLCache(maxsize=10, ttl=600)
+USER_LAST_REQ = TTLCache(maxsize=5000, ttl=30)
+FUZZY_TITLES_CACHE = TTLCache(maxsize=10, ttl=1800)
 RESTRICTED_WRITE_CHATS = TTLCache(maxsize=500, ttl=300)
 
 
@@ -516,7 +591,7 @@ async def safe_reply_text(
             parse_mode=parse_mode,
         )
     except FloodWait as e:
-        if e.value <= 15:
+        if e.value <= 10:
             await asyncio.sleep(e.value + 1)
             try:
                 return await msg.reply_text(
@@ -557,7 +632,7 @@ async def safe_reply_photo_or_text(
     """Tries sending a photo reply, and falls back to text if media is restricted."""
     if not msg:
         return None
-    if photo and str(photo).lower() != "none":
+    if photo and str(photo).strip().lower() not in ["none", "null", "false", ""]:
         try:
             return await msg.reply_photo(
                 photo=photo,
@@ -570,7 +645,7 @@ async def safe_reply_photo_or_text(
                 RESTRICTED_WRITE_CHATS.set(str(msg.chat.id), True)
             return None
         except FloodWait as e:
-            if e.value <= 15:
+            if e.value <= 10:
                 await asyncio.sleep(e.value + 1)
         except Exception:
             pass
@@ -630,7 +705,7 @@ _FEATURE_FLAGS_CACHE: Dict[str, Any] = {
 
 async def get_feature_flags(force_refresh: bool = False) -> Tuple[bool, bool]:
     now = time.time()
-    if not force_refresh and (now - _FEATURE_FLAGS_CACHE["ts"]) < 60:
+    if not force_refresh and (now - _FEATURE_FLAGS_CACHE["ts"]) < 120:
         return (
             bool(_FEATURE_FLAGS_CACHE["autotranslate"]),
             bool(_FEATURE_FLAGS_CACHE["multichoice"]),
@@ -667,7 +742,7 @@ async def set_feature_flag(key: str, value: bool):
 async def get_clean_words() -> list:
     global _CLEAN_WORDS_CACHE
     now = time.time()
-    if now - _CLEAN_WORDS_CACHE[0] < 60:
+    if now - _CLEAN_WORDS_CACHE[0] < 120:
         return _CLEAN_WORDS_CACHE[1]
     if cw_db is None:
         return DEFAULT_CLEAN_WORDS
@@ -687,7 +762,7 @@ async def get_active_promos() -> List[Dict[str, str]]:
     """Fetches active promotional buttons added via /addpromo in broadcast.py or plugin_db."""
     global _PROMO_CACHE
     now = time.time()
-    if now - _PROMO_CACHE[0] < 60:
+    if now - _PROMO_CACHE[0] < 120:
         return _PROMO_CACHE[1]
 
     promos: List[Dict[str, str]] = []
@@ -722,7 +797,8 @@ async def get_active_promos() -> List[Dict[str, str]]:
 
 def clean_filename(name: str, clean_words: list) -> str:
     """
-    Always removes:
+    Always removes & cleans:
+    - Converts/removes all stylish Unicode fonts (e.g. 𝙆𝙖𝙣𝙩𝙖𝙧𝙖 -> Kantara, 𝖬𝗈𝗏𝗂𝖾 -> Movie)
     - Any word starting with '@' (e.g., @Sandalwood_Kannada, [@Channel_Name])
     - URLs & Telegram links
     - Custom clean words & default file extensions
@@ -731,12 +807,15 @@ def clean_filename(name: str, clean_words: list) -> str:
     if not name:
         return "File"
 
-    # 1. Always strip URLs and any word starting with '@' (including surrounding brackets)
+    # 1. Normalize/strip stylish Unicode fonts first so @tags and custom words inside fancy fonts are caught
+    name = strip_stylish_fonts(str(name))
+
+    # 2. Always strip URLs and any word starting with '@' (including surrounding brackets)
     name = re.sub(r"(?i)https?://\S+|t\.me/\S+|www\.\S+", " ", name)
     name = re.sub(r"[\[\(\{<]*@[a-zA-Z0-9_.\-]+[\]\)\}>]*", " ", name)
     name = re.sub(r"@\S+", " ", name)
 
-    # 2. Strip default extensions & tags if enabled
+    # 3. Strip default extensions & tags if enabled
     if any(
         w.lower() in ["mkv", "sandalwood", "mp4", "avi", "webm", "zip", "rar"]
         for w in clean_words
@@ -744,16 +823,16 @@ def clean_filename(name: str, clean_words: list) -> str:
         name = re.sub(r"(?i)\[?@?sandalwood[^\]\s]*\]?", " ", name)
         name = re.sub(r"(?i)\b(sandalwood|mkv|mp4|avi|webm|zip|rar)\b", " ", name)
 
-    # 3. Strip custom configured words/phrases from Clean Filename Words Manager
+    # 4. Strip custom configured words/phrases from Clean Filename Words Manager
     for word in clean_words:
-        w_str = str(word).strip()
+        w_str = strip_stylish_fonts(str(word).strip())
         if not w_str or w_str == "@":
             continue
         if w_str.lower() in ["mkv", "sandalwood", "mp4", "avi", "webm", "zip", "rar"]:
             continue
         name = re.sub(rf"(?i){re.escape(w_str)}", " ", name)
 
-    # 4. Always strip symbols, brackets, and punctuation (keep letters, numbers, and Indic script)
+    # 5. Always strip symbols, brackets, and punctuation (keep letters, numbers, and Indic script)
     name = re.sub(r"[_.\-\+\[\]\(\)\{\}\|~`!#$%^&*=\\/:;\"'<>,?]+", " ", name)
     name = re.sub(r"[^\w\s\u0900-\u0D7F]", " ", name)
     name = re.sub(r"\s+", " ", name).strip()
@@ -800,13 +879,21 @@ async def resolve_auto_delete_timer(
     chat_id: Optional[int] = None, default_time: int = 300
 ) -> int:
     """
-    Reliably resolves the auto-delete timer in seconds across group settings,
-    bot_settings DB, plugin_db, temp, and info.py so auto-delete never fails.
+    Cached auto-delete timer resolver (avoids 3 MongoDB queries on every group message).
     """
+    cache_key = str(chat_id or "global")
+    cached_val = AUTO_DELETE_TIMER_CACHE.get(cache_key)
+    if cached_val is not None:
+        return int(cached_val)
+
+    resolved = default_time
+    found = False
+
     if chat_id:
         try:
             g_set = await get_settings(chat_id) or {}
             if g_set.get("auto_delete") is False:
+                AUTO_DELETE_TIMER_CACHE.set(cache_key, 0)
                 return 0
             for k in (
                 "button_del",
@@ -819,59 +906,38 @@ async def resolve_auto_delete_timer(
                 if val is not None and not isinstance(val, bool):
                     parsed = int(str(val).strip())
                     if parsed >= 0:
-                        return parsed
+                        resolved = parsed
+                        found = True
+                        break
         except Exception:
             pass
 
-    try:
-        b_set = await get_bot_settings() or {}
-        for k in (
-            "button_del",
-            "buttondel",
-            "button_auto_delete",
-            "auto_delete_time",
-            "autodelete",
-        ):
-            val = b_set.get(k)
-            if val is not None and not isinstance(val, bool):
-                parsed = int(str(val).strip())
-                if parsed >= 0:
-                    return parsed
-    except Exception:
-        pass
-
-    if _plugin_db is not None:
-        for attr_name in ("get_buttondel", "get_autodelete"):
-            if hasattr(_plugin_db, attr_name):
-                try:
-                    val = await getattr(_plugin_db, attr_name)()
-                    if val is not None and not isinstance(val, bool):
+    if not found:
+        for source in (temp, info):
+            for k in (
+                "BUTTON_AUTO_DELETE",
+                "BUTTON_DEL",
+                "BUTTON_DELETE_TIME",
+                "AUTO_DELETE_TIME",
+                "FILE_AUTO_DELETE",
+                "IMDB_DELETETIME",
+                "AUTO_DELETE",
+            ):
+                val = getattr(source, k, None)
+                if val is not None and not isinstance(val, bool):
+                    try:
                         parsed = int(str(val).strip())
-                        if parsed >= 0:
-                            return parsed
-                except Exception:
-                    pass
+                        if parsed > 0:
+                            resolved = 300 if parsed < 10 else parsed
+                            found = True
+                            break
+                    except Exception:
+                        continue
+            if found:
+                break
 
-    for source in (temp, info):
-        for k in (
-            "BUTTON_AUTO_DELETE",
-            "BUTTON_DEL",
-            "BUTTON_DELETE_TIME",
-            "AUTO_DELETE_TIME",
-            "FILE_AUTO_DELETE",
-            "IMDB_DELETETIME",
-            "AUTO_DELETE",
-        ):
-            val = getattr(source, k, None)
-            if val is not None and not isinstance(val, bool):
-                try:
-                    parsed = int(str(val).strip())
-                    if parsed > 0:
-                        return 300 if parsed < 10 else parsed
-                except Exception:
-                    continue
-
-    return default_time
+    AUTO_DELETE_TIMER_CACHE.set(cache_key, resolved)
+    return resolved
 
 
 # ============================================================
@@ -895,15 +961,11 @@ async def is_global_admin(user_id: int) -> bool:
 
 
 async def is_user_banned(user_id: int) -> bool:
+    """Fast in-memory ban check using temp.BANNED_USERS (0ms latency)."""
     if not user_id:
         return False
     if hasattr(temp, "BANNED_USERS") and int(user_id) in temp.BANNED_USERS:
         return True
-    if _plugin_db is not None and hasattr(_plugin_db, "is_banned"):
-        try:
-            return bool(await _plugin_db.is_banned(int(user_id)))
-        except Exception:
-            pass
     return False
 
 
@@ -997,6 +1059,7 @@ async def verify_admin(
 
 
 async def safe_save_filter(group_id, keyword, reply_text, btn, fileid, alert="[]"):
+    MANUAL_FILTERS_CACHE._data.pop(str(group_id), None)
     try:
         params = list(inspect.signature(add_filter).parameters.keys())
         if len(params) >= 6 and params[4] == "alert":
@@ -1043,11 +1106,12 @@ def build_effective_search_query(base_query: str, state: dict) -> str:
 
 
 # ============================================================
-# 🔮 ULTRA-ACCURATE MULTI-STAGE SEARCH, KANNADA PRIORITY & DEDUPLICATION
+# 🔮 ULTRA-FAST SEARCH, KANNADA PRIORITY & DEDUPLICATION
 # ============================================================
 def sanitize_search_query(text: str, allow_translit: bool = True) -> str:
     if not text:
         return ""
+    text = strip_stylish_fonts(text)
     if allow_translit and has_indic_script(text):
         text = transliterate_indic_to_english(text)
 
@@ -1079,14 +1143,15 @@ def sanitize_search_query(text: str, allow_translit: bool = True) -> str:
 
 
 def extract_inline_lang_and_qual(raw_text: str) -> Tuple[Optional[str], Optional[str]]:
+    norm_raw = strip_stylish_fonts(raw_text)
     detected_lang = None
     detected_qual = None
     for code, pattern in LANG_PATTERNS.items():
-        if pattern.search(raw_text):
+        if pattern.search(norm_raw):
             detected_lang = code
             break
     for qual, pattern in QUAL_PATTERNS.items():
-        if pattern.search(raw_text):
+        if pattern.search(norm_raw):
             detected_qual = qual
             break
     return detected_lang, detected_qual
@@ -1095,10 +1160,21 @@ def extract_inline_lang_and_qual(raw_text: str) -> Tuple[Optional[str], Optional
 async def safe_search_db(query: str, max_results: int = 10, offset: int = 0):
     try:
         return await get_search_results(
-            query, max_results=max_results, offset=offset, filter=True
+            query,
+            max_results=max_results,
+            offset=offset,
+            filter=True,
+            is_autocorrect=True,
         )
     except TypeError:
-        return await get_search_results(query, max_results=max_results, offset=offset)
+        try:
+            return await get_search_results(
+                query, max_results=max_results, offset=offset, filter=True
+            )
+        except TypeError:
+            return await get_search_results(
+                query, max_results=max_results, offset=offset
+            )
     except Exception as e:
         logger.error(f"DB search error for '{query}': {e}")
         return [], 0, 0
@@ -1115,7 +1191,7 @@ def _file_text(file_obj) -> str:
         if isinstance(file_obj, dict)
         else getattr(file_obj, "caption", "")
     )
-    return f"{fname or ''} {fcap or ''}".lower()
+    return strip_stylish_fonts(f"{fname or ''} {fcap or ''}").lower()
 
 
 def _is_kannada_file(file_obj) -> bool:
@@ -1127,14 +1203,14 @@ def _is_kannada_file(file_obj) -> bool:
 
 
 def _normalize_dedup_name(raw_name: str, clean_words: list) -> str:
-    """Normalizes a filename for deduplication (strips @usernames, extensions, symbols, and case)."""
-    s = str(raw_name or "").lower()
+    """Normalizes a filename for deduplication (strips stylish fonts, @usernames, extensions, symbols, and case)."""
+    s = strip_stylish_fonts(str(raw_name or "")).lower()
     s = re.sub(r"(?i)https?://\S+|t\.me/\S+|www\.\S+", " ", s)
     s = re.sub(r"[\[\(\{<]*@[a-zA-Z0-9_.\-]+[\]\)\}>]*", " ", s)
     s = re.sub(r"@\S+", " ", s)
     s = re.sub(r"\b(sandalwood|mkv|mp4|avi|webm|zip|rar)\b", " ", s)
     for word in clean_words:
-        w_str = str(word).strip().lower()
+        w_str = strip_stylish_fonts(str(word).strip()).lower()
         if w_str and w_str != "@":
             s = re.sub(rf"{re.escape(w_str)}", " ", s)
     s = re.sub(r"[^a-z0-9\u0900-\u0D7F]+", " ", s)
@@ -1163,7 +1239,9 @@ def _deduplicate_files(files: list, clean_words: list) -> list:
             else getattr(f, "file_name", "")
         )
         fsize = int(
-            f.get("file_size", 0) if isinstance(f, dict) else getattr(f, "file_size", 0)
+            f.get("file_size", 0)
+            if isinstance(f, dict)
+            else getattr(f, "file_size", 0)
         )
         norm_name = _normalize_dedup_name(raw_name, clean_words)
         dedup_key = (norm_name, fsize)
@@ -1187,10 +1265,12 @@ def _score_file_relevance(file_obj, query_str: str) -> Tuple[int, int, int]:
     2. Exact title relevance comes next.
     3. Larger/better quality file size breaks ties.
     """
-    fname = str(
-        file_obj.get("file_name", "")
-        if isinstance(file_obj, dict)
-        else getattr(file_obj, "file_name", "")
+    fname = strip_stylish_fonts(
+        str(
+            file_obj.get("file_name", "")
+            if isinstance(file_obj, dict)
+            else getattr(file_obj, "file_name", "")
+        )
     ).lower()
     fsize = int(
         file_obj.get("file_size", 0)
@@ -1213,7 +1293,6 @@ def _score_file_relevance(file_obj, query_str: str) -> Tuple[int, int, int]:
         title_match_score += 50
 
     is_kan = 1 if _is_kannada_file(file_obj) else 0
-    # Kannada files with matching movie name always rank at the very top
     kannada_priority = 1 if (is_kan and title_match_score > 0) else is_kan
 
     return (kannada_priority, title_match_score, fsize)
@@ -1226,34 +1305,42 @@ async def smart_filtered_search(
     qual_val = state.get("qual")
     clean_words = await get_clean_words()
 
-    # Fetch a pool of up to 250 matching files so we can deduplicate (same name + same size)
-    # and sort Kannada matching files to the very top across all pages!
-    pool, _, _ = await safe_search_db(base_query, max_results=250, offset=0)
+    pool_cache_key = f"pool:{base_query}:{lang_code or 'all'}:{qual_val or 'all'}"
+    deduped = POOL_SEARCH_CACHE.get(pool_cache_key)
 
-    if not pool and (lang_code or qual_val):
-        effective_query = build_effective_search_query(base_query, state)
-        pool, _, _ = await safe_search_db(effective_query, max_results=250, offset=0)
+    if deduped is None:
+        pool_limit = 100 if (lang_code or qual_val) else 60
+        pool, _, _ = await safe_search_db(
+            base_query, max_results=pool_limit, offset=0
+        )
 
-    if not pool:
-        return [], 0, 0
+        if not pool and (lang_code or qual_val):
+            effective_query = build_effective_search_query(base_query, state)
+            pool, _, _ = await safe_search_db(
+                effective_query, max_results=pool_limit, offset=0
+            )
 
-    lang_regex = LANG_PATTERNS.get(lang_code) if lang_code else None
-    qual_regex = QUAL_PATTERNS.get(qual_val) if qual_val else None
+        if not pool:
+            return [], 0, 0
 
-    matched = []
-    for f in pool:
-        combined_txt = _file_text(f)
-        if lang_regex and not lang_regex.search(combined_txt):
-            continue
-        if qual_regex and not qual_regex.search(combined_txt):
-            continue
-        matched.append(f)
+        lang_regex = LANG_PATTERNS.get(lang_code) if lang_code else None
+        qual_regex = QUAL_PATTERNS.get(qual_val) if qual_val else None
 
-    # 1. Remove duplicate files (same normalized name + same size)
-    deduped = _deduplicate_files(matched, clean_words)
+        matched = []
+        for f in pool:
+            combined_txt = _file_text(f)
+            if lang_regex and not lang_regex.search(combined_txt):
+                continue
+            if qual_regex and not qual_regex.search(combined_txt):
+                continue
+            matched.append(f)
 
-    # 2. Sort so Kannada matching files always appear first
-    deduped.sort(key=lambda x: _score_file_relevance(x, base_query), reverse=True)
+        # 1. Remove duplicate files (same normalized name + same size)
+        deduped = _deduplicate_files(matched, clean_words)
+
+        # 2. Sort so Kannada matching files always appear first
+        deduped.sort(key=lambda x: _score_file_relevance(x, base_query), reverse=True)
+        POOL_SEARCH_CACHE.set(pool_cache_key, deduped)
 
     total_matched = len(deduped)
     sliced = deduped[offset : offset + max_results]
@@ -1264,10 +1351,11 @@ async def smart_filtered_search(
 
 
 def _extract_clean_movie_title(raw_filename: str) -> str:
-    """Extracts a clean movie title without audio/codec suffixes like 'Aac 40', 'Dd5 1', 'Ddp5'."""
+    """Extracts a clean movie title without audio/codec suffixes."""
     if not raw_filename:
         return ""
-    s = re.sub(r"https?://\S+|t\.me/\S+|@\w+|\[[^\]]*\]|\([^)]*\)", " ", raw_filename)
+    s = strip_stylish_fonts(raw_filename)
+    s = re.sub(r"https?://\S+|t\.me/\S+|@\w+|\[[^\]]*\]|\([^)]*\)", " ", s)
     s = re.sub(r"[_.-]", " ", s)
     s = re.split(
         r"(?i)\b(4320p|2160p|1440p|1080p|720p|540p|480p|360p|240p|144p|4k|2k|8k|hdrip|web-?dl|webrip|bluray|brrip|dvdrip|camrip|hdts|predvd|x264|x265|hevc|avc|aac\d*|ddp?\d*|dd\d*|ac3|eac3|atmos|10bit|8bit|hdr|sdr|dual\s*audio|multi\s*audio|kannada|tulu|telugu|tamil|malayalam|hindi|english|marathi|gujarati|bengali|punjabi|nepali|esub|subtitles|mkv|mp4|avi)\b",
@@ -1290,7 +1378,10 @@ async def get_cached_db_titles() -> List[str]:
     try:
         media_col = getattr(_Media, "collection", _Media)
         sample_docs = (
-            await media_col.find({}, {"file_name": 1}).limit(3500).to_list(length=3500)
+            await media_col.find({}, {"file_name": 1})
+            .sort("_id", -1)
+            .limit(1200)
+            .to_list(length=1200)
         )
         title_set = set()
         for d in sample_docs:
@@ -1310,7 +1401,7 @@ async def get_cached_db_titles() -> List[str]:
 
 
 # ============================================================
-# 💡 "DID YOU MEAN?" MULTI-CHOICE SUGGESTIONS FINDER
+# 💡 FAST "DID YOU MEAN?" MULTI-CHOICE SUGGESTIONS FINDER
 # ============================================================
 def _consonant_skeleton(s: str) -> str:
     s_clean = re.sub(r"[^a-z0-9]", "", s.lower())
@@ -1372,6 +1463,8 @@ async def get_did_you_mean_suggestions(
 
     scored_candidates.sort(key=lambda x: x[0], reverse=True)
 
+    # Zero-DB-Wait Selection: Titles in db_titles come directly from _Media,
+    # so we don't need 5 sequential DB queries here!
     unique_suggestions: List[str] = []
     seen_roots = set()
 
@@ -1382,16 +1475,8 @@ async def get_did_you_mean_suggestions(
         root_key = re.sub(r"\s+", " ", root_key)
         if not root_key or root_key in seen_roots:
             continue
-
-        c_files, _, _ = await safe_search_db(cand, max_results=1, offset=0)
-        if not c_files and root_key != cand:
-            c_files, _, _ = await safe_search_db(root_key, max_results=1, offset=0)
-            if c_files:
-                cand = root_key
-
-        if c_files:
-            seen_roots.add(root_key)
-            unique_suggestions.append(cand)
+        seen_roots.add(root_key)
+        unique_suggestions.append(cand)
 
     return unique_suggestions
 
@@ -1457,7 +1542,9 @@ async def god_tier_search(
     if files:
         return files, offset, total, clean_query, was_transliterated
 
-    raw_alnum = re.sub(r"[^a-zA-Z0-9]", " ", query.lower())
+    raw_alnum = re.sub(
+        r"[^a-zA-Z0-9]", " ", strip_stylish_fonts(query).lower()
+    )
     raw_alnum = re.sub(r"\s+", " ", raw_alnum).strip()
     if raw_alnum and raw_alnum != clean_query:
         files, offset, total = await smart_filtered_search(
@@ -1770,7 +1857,6 @@ async def _send_not_found(
     )
 
     if suggestions:
-        # Save suggestions & raw search query, and send as TEXT ONLY (No image on Multi-Choice!)
         SUGGESTIONS_CACHE.set(key, suggestions)
         DYM_QUERY_CACHE.set(key, raw_search.strip())
         mention = msg.from_user.mention if msg.from_user else "User"
@@ -1803,7 +1889,7 @@ async def _send_not_found(
 
 
 # ============================================================
-# 📁 CORE AUTO FILTER ENGINE
+# 📁 CORE AUTO FILTER ENGINE (INSTANT RESPONSE)
 # ============================================================
 async def auto_filter(client: Client, msg: Message):
     try:
@@ -1814,7 +1900,6 @@ async def auto_filter(client: Client, msg: Message):
         ):
             return
 
-        # Skip immediately if this group has restricted the bot from sending messages
         if msg.chat and RESTRICTED_WRITE_CHATS.get(str(msg.chat.id)):
             return
 
@@ -1846,25 +1931,21 @@ async def auto_filter(client: Client, msg: Message):
         ]:
             return
 
-        autotranslate_on, multichoice_on = await get_feature_flags()
-
-        try:
-            b_set = await get_bot_settings() or {}
-        except Exception:
-            b_set = {}
-
-        try:
-            settings = await get_settings(msg.chat.id) or {}
-        except Exception:
-            settings = {}
+        # Fetch flags, bot settings, and group settings concurrently in 0ms from cache
+        (autotranslate_on, multichoice_on), b_set, settings = await asyncio.gather(
+            get_feature_flags(),
+            get_bot_settings(),
+            get_settings(msg.chat.id),
+        )
+        b_set = b_set or {}
+        settings = settings or {}
 
         spell_check_on = bool(settings.get("spell_check", True))
 
         if has_indic_script(search) and not autotranslate_on:
-            fnf_img = b_set.get("not_found_img", getattr(info, "NOT_FOUND_IMG", None))
-            fnf_txt = b_set.get(
-                "not_found_text",
-                getattr(info, "NOT_FOUND_MSG", "<b>🚫 File not found.</b>"),
+            fnf_img = b_set.get("not_found_img") or getattr(info, "NOT_FOUND_IMG", None)
+            fnf_txt = b_set.get("not_found_text") or getattr(
+                info, "NOT_FOUND_MSG", "<b>🚫 File not found.</b>"
             )
             return await _send_not_found(
                 client,
@@ -1900,10 +1981,9 @@ async def auto_filter(client: Client, msg: Message):
                 )
 
         if not files:
-            fnf_img = b_set.get("not_found_img", getattr(info, "NOT_FOUND_IMG", None))
-            fnf_txt = b_set.get(
-                "not_found_text",
-                getattr(info, "NOT_FOUND_MSG", "<b>🚫 File not found.</b>"),
+            fnf_img = b_set.get("not_found_img") or getattr(info, "NOT_FOUND_IMG", None)
+            fnf_txt = b_set.get("not_found_text") or getattr(
+                info, "NOT_FOUND_MSG", "<b>🚫 File not found.</b>"
             )
             return await _send_not_found(
                 client,
@@ -1946,7 +2026,7 @@ async def auto_filter(client: Client, msg: Message):
         bot_username = temp.U_NAME or "bot"
         mention = msg.from_user.mention if msg.from_user else "User"
 
-        safe_orig_title = html.escape(search.title())
+        safe_orig_title = html.escape(strip_stylish_fonts(search).title())
         safe_corr_title = html.escape(search_query.title())
         was_indic = bool(autotranslate_on and has_indic_script(search))
 
@@ -1990,7 +2070,7 @@ async def auto_filter(client: Client, msg: Message):
         except Exception:
             final_caption, final_markup = cap, default_markup
 
-        auto_img = b_set.get("auto_img", getattr(info, "AUTO_IMG", None))
+        auto_img = b_set.get("auto_img") or getattr(info, "AUTO_IMG", None)
         m = await safe_reply_photo_or_text(
             msg,
             photo=auto_img,
@@ -2010,14 +2090,13 @@ async def auto_filter(client: Client, msg: Message):
 
 
 # ============================================================
-# ⚡ UNIFIED GROUP MESSAGE HANDLER (CUSTOM FILTERS + AUTO FILTER)
+# ⚡ UNIFIED GROUP MESSAGE HANDLER (ZERO COOLDOWN BLOCKING)
 # ============================================================
 @Client.on_message(filters.group & filters.text & filters.incoming)
 async def give_filter(client: Client, message: Message):
     if not message.text or message.text.startswith(("/", "!", "#", ".", ",", "?", "@")):
         return
 
-    # Skip immediately if this group has restricted the bot from sending messages
     if message.chat and RESTRICTED_WRITE_CHATS.get(str(message.chat.id)):
         return
 
@@ -2029,13 +2108,6 @@ async def give_filter(client: Client, message: Message):
     user_id = message.from_user.id if message.from_user else 0
     if user_id and await is_user_banned(user_id):
         return
-
-    if user_id != 0:
-        if (last_req := USER_LAST_REQ.get(str(user_id))) and (
-            time.time() - last_req
-        ) < 1.5:
-            return
-        USER_LAST_REQ.set(str(user_id), time.time())
 
     try:
         matched_manual = await manual_filters(client, message)
@@ -2559,6 +2631,7 @@ async def pagination_handler(bot: Client, query: CallbackQuery):
         keywords = await get_filters(target_chat_id)
         for kw in keywords:
             await delete_filter(query.message, kw, target_chat_id)
+        MANUAL_FILTERS_CACHE._data.pop(str(target_chat_id), None)
         await safe_answer(query, "✅ All filters deleted!", show_alert=True)
         try:
             return await query.message.edit_text(
@@ -3049,6 +3122,7 @@ async def del_filter_cmd(client: Client, message: Message):
         )
     keyword = message.text.split(None, 1)[1].lower().strip()
     await delete_filter(message, keyword, target_chat_id)
+    MANUAL_FILTERS_CACHE._data.pop(str(target_chat_id), None)
     out_msg = await safe_reply_text(
         message,
         f"🗑️ <b>Filter <code>{html.escape(keyword)}</code> deleted.</b>",
@@ -3260,7 +3334,7 @@ async def safe_send_text_filter(
 
 
 # ============================================================
-# ⚡ LIVE GROUP TRIGGER HANDLER
+# ⚡ LIVE GROUP TRIGGER HANDLER (CACHED MANUAL FILTERS)
 # ============================================================
 async def manual_filters(client: Client, message: Message, text=False) -> bool:
     if getattr(info, "REPAIR_MODE", False) and not await verify_admin(
@@ -3280,25 +3354,32 @@ async def manual_filters(client: Client, message: Message, text=False) -> bool:
         return False
 
     reply_id = message.reply_to_message.id if message.reply_to_message else message.id
-    try:
-        keywords = await get_filters(group_id)
-    except Exception:
-        keywords = []
+
+    # Cache manual filter keywords per group for 120 seconds (0ms latency)
+    grp_key = str(group_id)
+    keywords = MANUAL_FILTERS_CACHE.get(grp_key)
+    if keywords is None:
+        try:
+            raw_kws = await get_filters(group_id)
+            keywords = sorted(
+                [str(k).strip() for k in (raw_kws or []) if str(k).strip()],
+                key=len,
+                reverse=True,
+            )
+        except Exception:
+            keywords = []
+        MANUAL_FILTERS_CACHE.set(grp_key, keywords)
 
     if not keywords:
         return False
 
-    for keyword in reversed(sorted(keywords, key=lambda x: len(str(x)))):
-        kw_str = str(keyword).strip()
-        if not kw_str:
-            continue
-
+    for kw_str in keywords:
         if re.search(
             r"( |^|[^\w])" + re.escape(kw_str) + r"( |$|[^\w])",
             name,
             flags=re.IGNORECASE,
         ):
-            reply_text, btn, alert, fileid = await find_filter(group_id, keyword)
+            reply_text, btn, alert, fileid = await find_filter(group_id, kw_str)
             if str(fileid).strip() in ["[]", "None", ""] and str(alert).strip() not in [
                 "[]",
                 "None",
