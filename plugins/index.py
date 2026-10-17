@@ -404,7 +404,9 @@ def format_eta(seconds: float) -> str:
     return f"{s}s"
 
 
-def parse_channel_link_or_forward(message: Message) -> Tuple[Optional[Any], Optional[int]]:
+def parse_channel_link_or_forward(
+    message: Message,
+) -> Tuple[Optional[Any], Optional[int]]:
     """Extracts (chat_id_or_username, last_msg_id) from a link or forwarded message."""
     target = message.reply_to_message if message.reply_to_message else message
 
@@ -427,7 +429,10 @@ def parse_channel_link_or_forward(message: Message) -> Tuple[Optional[Any], Opti
         if len(parts) >= 3 and parts[1].lstrip("-").isdigit() and parts[2].isdigit():
             return int(parts[1]), int(parts[2])
 
-    if getattr(target, "forward_from_chat", None) and target.forward_from_chat.type == enums.ChatType.CHANNEL:
+    if (
+        getattr(target, "forward_from_chat", None)
+        and target.forward_from_chat.type == enums.ChatType.CHANNEL
+    ):
         return target.forward_from_chat.id, target.forward_from_message_id
 
     if getattr(target, "forward_origin", None):
@@ -443,7 +448,9 @@ def parse_channel_link_or_forward(message: Message) -> Tuple[Optional[Any], Opti
 # ============================================================
 # 🧹 /freedb COMMAND (FREES UP WASTED MONGODB SPACE INSTANTLY)
 # ============================================================
-@Client.on_message(filters.command(["freedb", "compactdb", "cleanquota"]) & filters.incoming, group=-2)
+@Client.on_message(
+    filters.command(["freedb", "compactdb", "cleanquota"]) & filters.incoming, group=-2
+)
 async def freedb_command_handler(client: Client, message: Message):
     uid = (
         message.from_user.id
@@ -470,7 +477,8 @@ async def freedb_command_handler(client: Client, message: Message):
             )
         except Exception as e:
             return await safe_edit_text(
-                status_msg, f"⚠️ <b>Optimization Error:</b> <code>{html.escape(str(e))}</code>"
+                status_msg,
+                f"⚠️ <b>Optimization Error:</b> <code>{html.escape(str(e))}</code>",
             )
 
     # Fallback direct cleanup if helper not exported
@@ -481,9 +489,7 @@ async def freedb_command_handler(client: Client, message: Message):
                 await col.drop_indexes()
             except Exception:
                 pass
-            await col.update_many(
-                {}, {"$unset": {"file_id_raw": "", "mime_type": ""}}
-            )
+            await col.update_many({}, {"$unset": {"file_id_raw": "", "mime_type": ""}})
         await safe_edit_text(
             status_msg,
             "✅ <b>Dropped redundant indexes & compacted media documents!</b>",
@@ -538,9 +544,7 @@ async def delete_skip_number(client: Client, message: Message):
         )
 
     temp.CURRENT = 0
-    await safe_reply_text(
-        message, "✅ <b>Skip number reset to:</b> <code>0</code>"
-    )
+    await safe_reply_text(message, "✅ <b>Skip number reset to:</b> <code>0</code>")
 
 
 @Client.on_message(filters.command("currentskip") & filters.incoming, group=-2)
@@ -585,7 +589,8 @@ async def _prompt_index_confirmation(
         )
     except Exception as e:
         return await safe_reply_text(
-            message, f"⚠️ <b>Error fetching channel:</b> <code>{html.escape(str(e))}</code>"
+            message,
+            f"⚠️ <b>Error fetching channel:</b> <code>{html.escape(str(e))}</code>",
         )
 
     # Check how many bots are available in the Multi-Bot pool
@@ -811,9 +816,15 @@ async def index_callback_handler(bot: Client, query: CallbackQuery):
             chat_id = int(parts[2]) if parts[2].lstrip("-").isdigit() else parts[2]
             last_msg_id = int(parts[3])
             media_filter = parts[4] if len(parts) > 4 else "all"
-            start_skip = int(parts[5]) if len(parts) > 5 else int(getattr(temp, "CURRENT", 0) or 0)
+            start_skip = (
+                int(parts[5])
+                if len(parts) > 5
+                else int(getattr(temp, "CURRENT", 0) or 0)
+            )
         except Exception:
-            return await safe_answer(query, "Invalid callback parameters!", show_alert=True)
+            return await safe_answer(
+                query, "Invalid callback parameters!", show_alert=True
+            )
 
         await safe_answer(query, "🚀 Launching Distributed Multi-Bot Indexer...")
         asyncio.create_task(
@@ -917,7 +928,15 @@ async def run_distributed_indexing(
         }
 
         cancel_markup = InlineKeyboardMarkup(
-            [[create_btn("🛑 Cancel Indexing", callback_data="index#cancel", style=BTN_DANGER)]]
+            [
+                [
+                    create_btn(
+                        "🛑 Cancel Indexing",
+                        callback_data="index#cancel",
+                        style=BTN_DANGER,
+                    )
+                ]
+            ]
         )
 
         await safe_edit_text(
@@ -998,9 +1017,9 @@ async def run_distributed_indexing(
                 stats["processed"] += chunk_len
                 done_by_worker += chunk_len
                 pct = min(100.0, (done_by_worker / total_worker_msgs) * 100)
-                stats["worker_progress"][b_label] = (
-                    f"{chunk_end:,} / {w_end:,} ({pct:.1f}%)"
-                )
+                stats["worker_progress"][
+                    b_label
+                ] = f"{chunk_end:,} / {w_end:,} ({pct:.1f}%)"
 
                 # Save checkpoint periodically for single-bot or first worker
                 if chunk_end % 2000 == 0:
@@ -1045,9 +1064,7 @@ async def run_distributed_indexing(
                     f"<b>Worker Partitions:</b>\n{worker_lines}"
                 )
                 if skipped_bots:
-                    progress_text += (
-                        f"\n\n⚠️ <i>Bots not Admin in channel: {', '.join(skipped_bots[:3])}</i>"
-                    )
+                    progress_text += f"\n\n⚠️ <i>Bots not Admin in channel: {', '.join(skipped_bots[:3])}</i>"
 
                 await safe_edit_text(
                     status_msg, progress_text, reply_markup=cancel_markup
@@ -1055,10 +1072,7 @@ async def run_distributed_indexing(
 
         ui_task = asyncio.create_task(_ui_progress_loop())
         await asyncio.gather(
-            *[
-                _worker_task(c, ws, we, lbl)
-                for c, ws, we, lbl in bot_ranges
-            ],
+            *[_worker_task(c, ws, we, lbl) for c, ws, we, lbl in bot_ranges],
             return_exceptions=True,
         )
         workers_done = True
