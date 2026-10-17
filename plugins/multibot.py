@@ -28,8 +28,8 @@ from pyrogram.types import (
 import info
 
 try:
+    from database.ia_filterdb import db as _db1
     from database.ia_filterdb import (
-        db as _db1,
         get_all_configured_dbs,
         get_all_healthy_read_dbs,
         mark_db_error,
