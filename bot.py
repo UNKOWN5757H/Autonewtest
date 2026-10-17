@@ -2,11 +2,10 @@ import asyncio
 import builtins
 import os
 import signal
-import sys
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple, Union
 
 # ===================================================================
-# 🛡️ 0. INJECT TYPING ALIASES INTO BUILTINS (Fixes NameError: Tuple in fsub.py)
+# 🛡️ 0. INJECT TYPING ALIASES INTO BUILTINS (Fixes NameError: Tuple)
 # ===================================================================
 for _type_name, _type_obj in (
     ("Tuple", Tuple),
@@ -57,6 +56,12 @@ from database.ia_filterdb import Media
 from database.users_chats_db import db as old_db
 from info import API_HASH, API_ID, BOT_TOKEN, LOG_STR, PORT, SESSION
 from utils import temp
+
+try:
+    from database.ia_filterdb import get_all_healthy_read_dbs, mark_db_error
+except ImportError:
+    get_all_healthy_read_dbs = None
+    mark_db_error = None
 
 try:
     from database.plugin_dbs import plugin_db
@@ -128,21 +133,47 @@ async def is_user_admin(client: Client, message: Message) -> bool:
     return False
 
 
+async def _find_config_doc_across_dbs(col_name: str, query_doc: dict) -> Optional[dict]:
+    """Reads config documents across all healthy DBs (DB 1, DB 2, DB 3) so settings are never lost."""
+    if callable(get_all_healthy_read_dbs):
+        for idx, target_db in get_all_healthy_read_dbs():
+            try:
+                doc = await target_db[col_name].find_one(query_doc)
+                if doc:
+                    return doc
+            except Exception as e:
+                if callable(mark_db_error):
+                    mark_db_error(idx, e)
+                continue
+    try:
+        db_client = motor.motor_asyncio.AsyncIOMotorClient(
+            info.DATABASE_URI,
+            serverSelectionTimeoutMS=4000,
+            connectTimeoutMS=4000,
+            socketTimeoutMS=8000,
+        )
+        bot_db = db_client[info.DATABASE_NAME]
+        return await bot_db[col_name].find_one(query_doc)
+    except Exception:
+        return None
+
+
 async def _restore_persistent_settings():
     """Restores saved custom captions, UI settings, timers, and global images into `info` on bot startup."""
     try:
-        db_client = motor.motor_asyncio.AsyncIOMotorClient(info.DATABASE_URI)
-        bot_db = db_client[info.DATABASE_NAME]
-
         # 1. Restore custom_captions collection
-        cap_doc = await bot_db["custom_captions"].find_one({"_id": "settings"})
+        cap_doc = await _find_config_doc_across_dbs(
+            "custom_captions", {"_id": "settings"}
+        )
         if cap_doc:
             for k, v in cap_doc.items():
                 if k != "_id" and v is not None:
                     setattr(info, k, v)
 
         # 2. Restore global_bot_settings collection
-        global_doc = await bot_db["global_bot_settings"].find_one({"_id": "bot_config"})
+        global_doc = await _find_config_doc_across_dbs(
+            "global_bot_settings", {"_id": "bot_config"}
+        )
         if global_doc:
             attr_map = {
                 "fsub_img": "FSUB_IMG",
@@ -160,7 +191,9 @@ async def _restore_persistent_settings():
                     setattr(info, attr, global_doc[gk])
 
         # 3. Restore deletion_settings timers (Both PM & Group Button Auto-Delete)
-        del_doc = await bot_db["deletion_settings"].find_one({"_id": "timers"})
+        del_doc = await _find_config_doc_across_dbs(
+            "deletion_settings", {"_id": "timers"}
+        )
         if del_doc:
             if (
                 "FILE_AUTO_DELETE" in del_doc
@@ -182,7 +215,9 @@ async def _restore_persistent_settings():
                 setattr(temp, "BUTTON_DEL", b_val)
 
         # 4. Restore reaction_settings
-        react_doc = await bot_db["reaction_settings"].find_one({"_id": "config"})
+        react_doc = await _find_config_doc_across_dbs(
+            "reaction_settings", {"_id": "config"}
+        )
         if react_doc and "enabled" in react_doc:
             setattr(info, "ENABLE_REACTION", bool(react_doc["enabled"]))
 
@@ -195,6 +230,22 @@ async def _restore_persistent_settings():
             pass
     except Exception as e:
         logger.error(f"Failed to restore persistent settings on boot: {e}")
+
+
+async def _boot_multibot_workers():
+    """Loads saved Multi-Bot workers across all DBs and starts them in the background on boot."""
+    try:
+        from plugins.multibot import ensure_all_workers_started, load_multibot_config
+
+        cfg = await load_multibot_config(force_refresh=True)
+        bots_count = len(cfg.get("bots", []))
+        if cfg.get("enabled", True) and bots_count > 0:
+            started = await ensure_all_workers_started()
+            logger.info(
+                f"🤖 Multi-Bot Auto-Boot: {len(started)}/{bots_count} Worker Bot(s) Online and Ready!"
+            )
+    except Exception as e:
+        logger.error(f"Multi-Bot auto-boot warning: {e}")
 
 
 # ============================================================
@@ -257,6 +308,9 @@ class Bot(Client):
         temp.B_NAME = me.first_name
         self.username = f"@{me.username}"
 
+        # Automatically load & start all saved Multi-Bot workers in the background
+        asyncio.create_task(_boot_multibot_workers())
+
         logger.info(
             f"{me.first_name} with Pyrogram v{__version__} (Layer {layer}) started on @{me.username}."
         )
@@ -283,6 +337,12 @@ class Bot(Client):
                     pass
 
     async def stop(self, *args, **kwargs):
+        try:
+            from plugins.multibot import stop_all_workers
+
+            await stop_all_workers()
+        except Exception:
+            pass
         await super().stop(*args, **kwargs)
         logger.info("Bot stopped. Bye.")
 
