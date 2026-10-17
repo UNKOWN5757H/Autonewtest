@@ -52,9 +52,9 @@ except ImportError:
     _std_make_inactive = None
 
 try:
+    from database.ia_filterdb import Media as _Media
+    from database.ia_filterdb import db as _db1_handle
     from database.ia_filterdb import (
-        Media as _Media,
-        db as _db1_handle,
         get_all_configured_dbs,
         get_all_dbs_stats,
         nuke_all_media_dbs,
@@ -770,7 +770,9 @@ async def optimize_db_cmd(client: Client, message: Message):
         if callable(get_all_configured_dbs):
             all_dbs = get_all_configured_dbs(include_when_disabled=True)
         else:
-            all_dbs = [(1, _db1_handle, "Primary DB")] if _db1_handle is not None else []
+            all_dbs = (
+                [(1, _db1_handle, "Primary DB")] if _db1_handle is not None else []
+            )
 
         for idx, db_h, lbl in all_dbs:
             if db_h is not None:
@@ -788,7 +790,9 @@ async def optimize_db_cmd(client: Client, message: Message):
             )
             created_indexes.append(f"FSub Requests: {idx3}")
 
-        summary = "\n".join(f"• <code>{html.escape(str(x))}</code>" for x in created_indexes)
+        summary = "\n".join(
+            f"• <code>{html.escape(str(x))}</code>" for x in created_indexes
+        )
         if sts:
             await safe_edit_text(
                 sts,
