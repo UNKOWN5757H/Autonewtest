@@ -35,8 +35,12 @@ _MONGO_KWARGS = {
 SECOND_DATABASE_URI = getattr(info, "SECOND_DATABASE_URI", "") or ""
 THIRD_DATABASE_URI = getattr(info, "THIRD_DATABASE_URI", "") or ""
 
-SECOND_DATABASE_NAME = getattr(info, "SECOND_DATABASE_NAME", DATABASE_NAME) or DATABASE_NAME
-THIRD_DATABASE_NAME = getattr(info, "THIRD_DATABASE_NAME", DATABASE_NAME) or DATABASE_NAME
+SECOND_DATABASE_NAME = (
+    getattr(info, "SECOND_DATABASE_NAME", DATABASE_NAME) or DATABASE_NAME
+)
+THIRD_DATABASE_NAME = (
+    getattr(info, "THIRD_DATABASE_NAME", DATABASE_NAME) or DATABASE_NAME
+)
 
 db = AsyncIOMotorClient(DATABASE_URI, **_MONGO_KWARGS)[DATABASE_NAME]
 instance = MotorAsyncIOInstance(db)
@@ -55,8 +59,12 @@ db3 = (
 )
 
 # Circuit-breaker trackers so a broken/full DB never freezes the bot or spams logs
-_DEAD_READ_DBS: Dict[int, float] = {}   # db_idx -> cooldown_until_ts (for bad auth / paused pool)
-_QUOTA_FULL_DBS: Dict[int, float] = {}  # db_idx -> cooldown_until_ts (for 512MB quota full)
+_DEAD_READ_DBS: Dict[int, float] = (
+    {}
+)  # db_idx -> cooldown_until_ts (for bad auth / paused pool)
+_QUOTA_FULL_DBS: Dict[int, float] = (
+    {}
+)  # db_idx -> cooldown_until_ts (for 512MB quota full)
 
 ACTIVE_DB_INDEX = 1  # 1=db, 2=db2, 3=db3
 KNOWN_TITLES = set()
@@ -555,7 +563,9 @@ async def save_batch(media_list) -> Tuple[int, int, int]:
                 continue
             return 0, 0, len(media_list)
 
-    raise OperationFailure("ALL AVAILABLE MONGODB CLUSTERS ARE FULL (Code 8000).", code=8000)
+    raise OperationFailure(
+        "ALL AVAILABLE MONGODB CLUSTERS ARE FULL (Code 8000).", code=8000
+    )
 
 
 async def get_file_details(query):
