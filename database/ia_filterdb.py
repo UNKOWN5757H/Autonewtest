@@ -20,7 +20,7 @@ except ImportError:
         "thefuzz missing! Run 'pip install thefuzz[speedup]'."
     )
 
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__)
 db = AsyncIOMotorClient(DATABASE_URI)[DATABASE_NAME]
 instance = MotorAsyncIOInstance(db)
 
@@ -28,22 +28,32 @@ KNOWN_TITLES = set()
 
 
 class SimpleCache:
-    def __init__(self, ttl=300):
-        self.cache, self.ttl = {}, ttl
+    def __init__(self, ttl=900, maxsize=5000):
+        self.cache = {}
+        self.ttl = ttl
+        self.maxsize = maxsize
 
     def get(self, key):
-        if key in self.cache and time.time() - self.cache[key]["time"] < self.ttl:
-            return self.cache[key]["data"]
+        item = self.cache.get(key)
+        if not item:
+            return None
+        if time.time() - item["time"] < self.ttl:
+            return item["data"]
         self.cache.pop(key, None)
         return None
 
     def set(self, key, data):
-        if len(self.cache) > 3000:
-            self.cache.clear()
+        if len(self.cache) >= self.maxsize:
+            oldest_key = next(iter(self.cache))
+            self.cache.pop(oldest_key, None)
         self.cache[key] = {"time": time.time(), "data": data}
 
+    def clear(self):
+        self.cache.clear()
 
-search_cache = SimpleCache()
+
+search_cache = SimpleCache(ttl=900, maxsize=5000)
+file_details_cache = SimpleCache(ttl=3600, maxsize=10000)
 
 
 def add_to_vocab(file_name):
@@ -206,7 +216,25 @@ async def get_search_results(
     if file_type:
         mongo_query = {"$and": [mongo_query, {"file_type": file_type}]}
 
-    total_results = await db[COLLECTION_NAME].count_documents(mongo_query)
+    # ⚡ SINGLE-QUERY FETCH: Avoids the slow `count_documents` full-collection scan!
+    fetch_limit = max_results + 1
+    files = (
+        await db[COLLECTION_NAME]
+        .find(mongo_query)
+        .sort("_id", -1)
+        .skip(offset)
+        .limit(fetch_limit)
+        .to_list(length=fetch_limit)
+    )
+
+    has_more = len(files) > max_results
+    if has_more:
+        files = files[:max_results]
+        total_results = offset + max_results + 1
+        next_offset = offset + max_results
+    else:
+        total_results = offset + len(files)
+        next_offset = 0
 
     if total_results == 0 and not is_autocorrect and process and KNOWN_TITLES:
         if best_match := process.extractOne(query_text, KNOWN_TITLES):
@@ -223,17 +251,14 @@ async def get_search_results(
                     search_cache.set(cache_key, corrected)
                 return corrected
 
-    next_offset = offset + max_results if offset + max_results < total_results else 0
-    files = (
-        await db[COLLECTION_NAME]
-        .find(mongo_query)
-        .sort("_id", -1)
-        .skip(offset)
-        .limit(max_results)
-        .to_list(length=max_results)
-    )
+    wrapped_files = []
+    for f in files:
+        wrapped = SafeMediaWrapper(f)
+        if wrapped.file_id:
+            file_details_cache.set(str(wrapped.file_id), [wrapped])
+        wrapped_files.append(wrapped)
 
-    result = ([SafeMediaWrapper(f) for f in files], next_offset, total_results)
+    result = (wrapped_files, next_offset, total_results)
     if total_results > 0:
         search_cache.set(cache_key, result)
     return result
@@ -262,7 +287,9 @@ async def save_file(media):
             "file_id_raw": getattr(media, "file_id", None),
         }
         await db[COLLECTION_NAME].insert_one(doc)
-        search_cache.cache.clear()
+        search_cache.clear()
+        wrapped = SafeMediaWrapper(doc)
+        file_details_cache.set(str(file_id), [wrapped])
         return True, 1
     except DuplicateKeyError:
         return False, 0
@@ -305,10 +332,10 @@ async def save_batch(media_list):
         return 0, 0, len(media_list)
     try:
         res = await db[COLLECTION_NAME].insert_many(documents, ordered=False)
-        search_cache.cache.clear()
+        search_cache.clear()
         return len(res.inserted_ids), 0, 0
     except BulkWriteError as bwe:
-        search_cache.cache.clear()
+        search_cache.clear()
         inserted = bwe.details.get("nInserted", 0)
         duplicates = sum(
             1 for err in bwe.details.get("writeErrors", []) if err["code"] == 11000
@@ -317,15 +344,22 @@ async def save_batch(media_list):
 
 
 async def get_file_details(query):
-    """Identifies truncated Telegram URLs and recovers the full file via regex."""
-    res = await db[COLLECTION_NAME].find({"_id": query}).to_list(length=1)
-    if not res and len(str(query)) >= 20:
-        res = (
-            await db[COLLECTION_NAME]
-            .find({"_id": {"$regex": f"^{re.escape(str(query))}"}})
-            .to_list(length=1)
+    """Instant RAM-cached lookup for file details when a user clicks a file button."""
+    q_str = str(query).strip()
+    if cached := file_details_cache.get(q_str):
+        return cached
+
+    doc = await db[COLLECTION_NAME].find_one({"_id": q_str})
+    if not doc and len(q_str) >= 20:
+        doc = await db[COLLECTION_NAME].find_one(
+            {"_id": {"$regex": f"^{re.escape(q_str)}"}}
         )
-    return [SafeMediaWrapper(f) for f in res]
+
+    if doc:
+        wrapped = [SafeMediaWrapper(doc)]
+        file_details_cache.set(q_str, wrapped)
+        return wrapped
+    return []
 
 
 def unpack_new_file_id(new_file_id):
