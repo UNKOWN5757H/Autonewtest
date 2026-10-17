@@ -52,16 +52,17 @@ except ImportError:
     _std_make_inactive = None
 
 try:
-    from database.ia_filterdb import Media as _Media
-    from database.ia_filterdb import db as _db1_handle
-    from database.ia_filterdb import db2 as _db2_handle
-    from database.ia_filterdb import db3 as _db3_handle
-    from database.ia_filterdb import get_all_dbs_stats, nuke_all_media_dbs
+    from database.ia_filterdb import (
+        Media as _Media,
+        db as _db1_handle,
+        get_all_configured_dbs,
+        get_all_dbs_stats,
+        nuke_all_media_dbs,
+    )
 except ImportError:
     _Media = None
     _db1_handle = None
-    _db2_handle = None
-    _db3_handle = None
+    get_all_configured_dbs = None
     get_all_dbs_stats = None
     nuke_all_media_dbs = None
 
@@ -759,11 +760,23 @@ async def optimize_db_cmd(client: Client, message: Message):
     created_indexes = []
     col_name = getattr(info, "COLLECTION_NAME", "VersionQ")
     try:
-        for idx, db_h in ((1, _db1_handle), (2, _db2_handle), (3, _db3_handle)):
+        try:
+            from plugins.datadb import load_datadb_config
+
+            await load_datadb_config()
+        except Exception:
+            pass
+
+        if callable(get_all_configured_dbs):
+            all_dbs = get_all_configured_dbs(include_when_disabled=True)
+        else:
+            all_dbs = [(1, _db1_handle, "Primary DB")] if _db1_handle is not None else []
+
+        for idx, db_h, lbl in all_dbs:
             if db_h is not None:
                 try:
                     idx_res = await db_h[col_name].create_index([("file_name", 1)])
-                    created_indexes.append(f"DB {idx} Media: {idx_res}")
+                    created_indexes.append(f"DB #{idx} ({lbl}) Media: {idx_res}")
                 except Exception:
                     pass
 
@@ -775,7 +788,7 @@ async def optimize_db_cmd(client: Client, message: Message):
             )
             created_indexes.append(f"FSub Requests: {idx3}")
 
-        summary = "\n".join(f"• <code>{x}</code>" for x in created_indexes)
+        summary = "\n".join(f"• <code>{html.escape(str(x))}</code>" for x in created_indexes)
         if sts:
             await safe_edit_text(
                 sts,
@@ -1519,17 +1532,18 @@ async def confirm_restart_cb(bot: Client, query: CallbackQuery):
 
 
 # ============================================================
-# 📊 3-DATABASE LIVE STATS & INSTANT CLEANUP
+# 📊 DYNAMIC MULTI-DATABASE LIVE STATS & INSTANT CLEANUP
 # ============================================================
 def _format_single_db_block(label: str, db_info: dict) -> str:
+    safe_lbl = html.escape(str(label))
     if not db_info.get("configured"):
-        return f"🗄️ <b>{label}:</b> <code>⚪ Not Configured</code>\n"
+        return f"🗄️ <b>{safe_lbl}:</b> <code>⚪ Not Configured</code>\n"
     status = db_info.get("status", "🟢 Connected")
     files = db_info.get("files", 0)
     used_str = get_size_str(db_info.get("used_bytes", 0))
     free_str = get_size_str(db_info.get("free_bytes", 0))
     return (
-        f"🗄️ <b>{label}:</b> <code>{status}</code>\n"
+        f"🗄️ <b>{safe_lbl}:</b> <code>{status}</code>\n"
         f"├ 📁 <b>Files:</b> <code>{files:,}</code>\n"
         f"├ 💾 <b>Used:</b> <code>{used_str} / 512.00 MB</code>\n"
         f"└ 💿 <b>Free:</b> <code>{free_str}</code>\n"
@@ -1537,6 +1551,14 @@ def _format_single_db_block(label: str, db_info: dict) -> str:
 
 
 async def _build_db_stats_text() -> str:
+    # Ensure all saved /datadb URLs are loaded so every database is included
+    try:
+        from plugins.datadb import load_datadb_config
+
+        await load_datadb_config()
+    except Exception:
+        pass
+
     total_users = 0
     total_chats = 0
     try:
@@ -1548,29 +1570,46 @@ async def _build_db_stats_text() -> str:
 
     if callable(get_all_dbs_stats):
         st = await get_all_dbs_stats()
-        db1 = st.get("db1", {})
-        db2 = st.get("db2", {})
-        db3 = st.get("db3", {})
+        all_dbs_list = st.get("all_dbs") or []
+        if not all_dbs_list:
+            for idx_k in ("db1", "db2", "db3"):
+                if st.get(idx_k) and st[idx_k].get("configured"):
+                    all_dbs_list.append(st[idx_k])
+
         total_files = st.get("total_files", 0)
         total_used = get_size_str(st.get("total_used_bytes", 0))
         total_free = get_size_str(st.get("total_free_bytes", 0))
         total_cap = get_size_str(st.get("total_capacity_bytes", 536870912))
         active_idx = st.get("active_db_index", 1)
+        multi_on = st.get("multi_db_enabled", True)
+        db_count = len(all_dbs_list)
 
+        db_blocks = []
+        for d_item in all_dbs_list:
+            d_idx = d_item.get("index", 1)
+            raw_lbl = d_item.get("label") or f"Database #{d_idx}"
+            display_lbl = (
+                f"DB #{d_idx} ({raw_lbl})"
+                if not str(raw_lbl).lower().startswith("db")
+                else raw_lbl
+            )
+            db_blocks.append(_format_single_db_block(display_lbl, d_item))
+
+        mode_str = "🟢 ON" if multi_on else "🔴 OFF (Primary Only)"
         return (
-            f"📊 <b>3-Database Cluster Statistics</b>\n"
+            f"📊 <b>Multi-Database Cluster Statistics ({db_count} DB{'s' if db_count != 1 else ''})</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"👥 <b>Total Users:</b> <code>{total_users:,}</code>\n"
             f"🏘 <b>Total Groups:</b> <code>{total_chats:,}</code>\n"
             f"📁 <b>Combined Total Files:</b> <code>{total_files:,}</code>\n"
-            f"⚡ <b>Active Write DB:</b> <code>Database {active_idx}</code>\n"
+            f"⚙️ <b>Multi-DB Mode:</b> <code>{mode_str}</code>\n"
+            f"⚡ <b>Active Write DB:</b> <code>Database #{active_idx}</code>\n"
             f"💾 <b>Total Used:</b> <code>{total_used} / {total_cap}</code>\n"
             f"💿 <b>Total Free:</b> <code>{total_free}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{_format_single_db_block('Database 1 (Primary)', db1)}\n"
-            f"{_format_single_db_block('Database 2 (Secondary)', db2)}\n"
-            f"{_format_single_db_block('Database 3 (Tertiary)', db3)}"
-            f"━━━━━━━━━━━━━━━━━━━━━"
+            + "\n".join(db_blocks)
+            + "━━━━━━━━━━━━━━━━━━━━━\n"
+            "💡 <i>Manage unlimited DB URLs anytime with <code>/datadb</code></i>"
         )
 
     total_files = await get_total_files_count()
@@ -1598,7 +1637,7 @@ async def bot_stats_cmd(bot: Client, message: Message):
 
     status_msg = await safe_reply_text(
         message,
-        "⏳ <b>Fetching 3-Database Live Stats...</b>",
+        "⏳ <b>Fetching Multi-Database Live Stats...</b>",
         parse_mode=enums.ParseMode.HTML,
     )
     try:
@@ -1633,7 +1672,7 @@ async def bot_stats_cmd(bot: Client, message: Message):
 async def adm_stats_refresh_cb(client: Client, query: CallbackQuery):
     if not await is_global_admin(query.from_user.id):
         return await safe_answer(query, "❌ Unauthorized.", show_alert=True)
-    await safe_answer(query, "Refreshing 3-Database stats...")
+    await safe_answer(query, "Refreshing Multi-DB stats...")
     try:
         stats_text = await _build_db_stats_text()
         markup = InlineKeyboardMarkup(
@@ -1773,7 +1812,7 @@ async def cancel_cleanusers_cb(client: Client, query: CallbackQuery):
 
 
 # ============================================================
-# 🔥 INSTANT 3-DATABASE WIPE COMMANDS (/clearfiles, /clearusers)
+# 🔥 INSTANT MULTI-DATABASE WIPE COMMANDS (/clearfiles, /clearusers)
 # ============================================================
 @Client.on_message(
     filters.command(["clearfiles", "clearusers"]) & filters.incoming,
@@ -1793,7 +1832,7 @@ async def wipe_prompt_cmd(bot: Client, message: Message):
     cmd = message.command[0].lower()
     action = "files" if cmd == "clearfiles" else "users"
     target_desc = (
-        "ALL MOVIE FILES ACROSS ALL 3 DATABASES (DB 1, DB 2 & DB 3)"
+        "ALL MOVIE FILES ACROSS ALL CONFIGURED DATABASES (PRIMARY DB + ALL /datadb URLs)"
         if action == "files"
         else "ALL USERS"
     )
@@ -1832,17 +1871,24 @@ async def nuke_callbacks(bot: Client, query: CallbackQuery):
 
     try:
         if action == "files":
+            try:
+                from plugins.datadb import load_datadb_config
+
+                await load_datadb_config()
+            except Exception:
+                pass
+
             if callable(nuke_all_media_dbs):
                 summary = await nuke_all_media_dbs()
                 total_del = summary.get("total_deleted", 0)
                 cleared_list = (
-                    ", ".join(summary.get("dbs_cleared", [])) or "DB 1, DB 2, DB 3"
+                    ", ".join(summary.get("dbs_cleared", [])) or "All Databases"
                 )
                 return await safe_edit_text(
                     query.message,
                     f"✅ <b>All Media Databases Wiped Instantly!</b>\n\n"
                     f"🗑️ <b>Total Deleted Files:</b> <code>{total_del:,}</code>\n"
-                    f"🗄️ <b>Databases Cleared:</b> <code>{cleared_list}</code>\n"
+                    f"🗄️ <b>Databases Cleared:</b> <code>{html.escape(cleared_list)}</code>\n"
                     f"💿 <b>Storage Status:</b> <code>100% Freed</code>",
                     parse_mode=enums.ParseMode.HTML,
                 )
