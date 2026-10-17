@@ -4,14 +4,13 @@ import inspect
 import math
 import re
 import time
-from logging import ERROR, INFO, WARNING, getLogger
+from logging import INFO, getLogger
 from typing import Any, Dict, List, Optional, Tuple
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from pyrogram import Client, enums, filters
 from pyrogram.errors import (
     ChannelInvalid,
-    ChatAdminRequired,
     ChatWriteForbidden,
     FloodWait,
     Forbidden,
@@ -40,9 +39,17 @@ logger.setLevel(INFO)
 # 🔗 SAFE IMPORTS FOR DATABASE & MULTI-BOT WORKER POOL
 # ============================================================
 try:
-    from database.ia_filterdb import save_file
+    from database.ia_filterdb import (
+        get_all_healthy_read_dbs,
+        get_writable_System_db,
+        mark_db_error,
+        save_file,
+    )
 except ImportError:
     save_file = None
+    get_all_healthy_read_dbs = None
+    get_writable_System_db = None
+    mark_db_error = None
 
 try:
     from database.ia_filterdb import save_batch as _db_save_batch
@@ -204,7 +211,12 @@ async def is_global_admin(user_id: int) -> bool:
 # ============================================================
 _idx_col = None
 try:
-    _DB_CLIENT = AsyncIOMotorClient(info.DATABASE_URI)
+    _DB_CLIENT = AsyncIOMotorClient(
+        info.DATABASE_URI,
+        serverSelectionTimeoutMS=4000,
+        connectTimeoutMS=4000,
+        socketTimeoutMS=8000,
+    )
     _BOT_DB = _DB_CLIENT[info.DATABASE_NAME]
     _idx_col = _BOT_DB["index_checkpoints"]
 except Exception as e:
@@ -212,6 +224,17 @@ except Exception as e:
 
 INDEX_LOCK = asyncio.Lock()
 _RESUME_MEMORY_CACHE: Dict[int, Dict[str, Any]] = {}
+
+
+def _get_writable_idx_col():
+    if callable(get_writable_System_db):
+        try:
+            target_db = get_writable_System_db()
+            if target_db is not None:
+                return target_db["index_checkpoints"]
+        except Exception:
+            pass
+    return _idx_col
 
 
 async def save_index_checkpoint(
@@ -228,20 +251,34 @@ async def save_index_checkpoint(
         "updated_at": time.time(),
     }
     _RESUME_MEMORY_CACHE[int(chat_id)] = data
-    if _idx_col is not None:
+    target_col = _get_writable_idx_col()
+    if target_col is not None:
         try:
-            await _idx_col.update_one(
+            await target_col.update_one(
                 {"_id": int(chat_id)}, {"$set": data}, upsert=True
             )
         except Exception:
-            # Ignore 512MB quota errors on checkpoints; RAM cache still holds it
             pass
 
 
 async def get_index_checkpoint(chat_id: int) -> Optional[Dict[str, Any]]:
     if int(chat_id) in _RESUME_MEMORY_CACHE:
         return _RESUME_MEMORY_CACHE[int(chat_id)]
-    if _idx_col is not None:
+
+    if callable(get_all_healthy_read_dbs):
+        for idx, target_db in get_all_healthy_read_dbs():
+            try:
+                doc = await target_db["index_checkpoints"].find_one(
+                    {"_id": int(chat_id)}
+                )
+                if doc:
+                    _RESUME_MEMORY_CACHE[int(chat_id)] = doc
+                    return doc
+            except Exception as e:
+                if callable(mark_db_error):
+                    mark_db_error(idx, e)
+                continue
+    elif _idx_col is not None:
         try:
             doc = await _idx_col.find_one({"_id": int(chat_id)})
             if doc:
@@ -254,7 +291,13 @@ async def get_index_checkpoint(chat_id: int) -> Optional[Dict[str, Any]]:
 
 async def clear_index_checkpoint(chat_id: int):
     _RESUME_MEMORY_CACHE.pop(int(chat_id), None)
-    if _idx_col is not None:
+    if callable(get_all_healthy_read_dbs):
+        for _, target_db in get_all_healthy_read_dbs():
+            try:
+                await target_db["index_checkpoints"].delete_one({"_id": int(chat_id)})
+            except Exception:
+                pass
+    elif _idx_col is not None:
         try:
             await _idx_col.delete_one({"_id": int(chat_id)})
         except Exception:
@@ -273,13 +316,12 @@ def _is_quota_exceeded_error(err: Exception) -> bool:
 
 async def fast_save_media_batch(media_list: list) -> Tuple[int, int, int, bool]:
     """
-    Saves a batch of media objects at maximum speed.
+    Saves a batch of media objects at maximum speed across DB 1, DB 2, and DB 3.
     Returns: (saved_count, duplicate_count, error_count, all_dbs_quota_full)
     """
     if not media_list:
         return 0, 0, 0, False
 
-    # 1. Use native bulk save_batch from database/ia_filterdb.py if available
     if callable(_db_save_batch):
         try:
             res = await _db_save_batch(media_list)
@@ -292,7 +334,6 @@ async def fast_save_media_batch(media_list: list) -> Tuple[int, int, int, bool]:
                     return res[0], res[1], 0, False
         except Exception as e:
             if _is_quota_exceeded_error(e):
-                # Trigger auto-storage cleanup once if available
                 if callable(_free_up_mongodb_storage):
                     try:
                         await _free_up_mongodb_storage()
@@ -304,7 +345,6 @@ async def fast_save_media_batch(media_list: list) -> Tuple[int, int, int, bool]:
                 return 0, 0, len(media_list), True
             logger.warning(f"save_batch fallback triggered: {e}")
 
-    # 2. Fallback: High-speed concurrent save_file calls (in sub-batches of 50)
     if not callable(save_file):
         return 0, 0, len(media_list), False
 
@@ -329,7 +369,7 @@ async def fast_save_media_batch(media_list: list) -> Tuple[int, int, int, bool]:
                     saved += 1
                 elif code == 0:
                     dups += 1
-                elif code == 8000:
+                elif code in (3, 8000):
                     quota_full = True
                     errs += 1
                 else:
@@ -351,13 +391,6 @@ async def fast_save_media_batch(media_list: list) -> Tuple[int, int, int, bool]:
 # 🛠️ MEDIA FILTER EXTRACTOR & TIME FORMATTER
 # ============================================================
 def extract_media_from_message(message: Message, media_filter: str = "all"):
-    """
-    Extracts the media object from a message according to media_filter:
-    - 'all': document, video, audio
-    - 'doc': document only
-    - 'video': video only
-    - 'audio': audio only
-    """
     if not message or getattr(message, "empty", False) or not message.media:
         return None, "empty"
 
@@ -424,7 +457,6 @@ def parse_channel_link_or_forward(
                 chat_id = chat_id_raw
             return chat_id, last_msg_id
 
-        # Also support "/index -1001234567890 500000"
         parts = target.text.strip().split()
         if len(parts) >= 3 and parts[1].lstrip("-").isdigit() and parts[2].isdigit():
             return int(parts[1]), int(parts[2])
@@ -473,7 +505,7 @@ async def freedb_command_handler(client: Client, message: Message):
             report = await _free_up_mongodb_storage()
             return await safe_edit_text(
                 status_msg,
-                f"✅ <b>MongoDB Storage Optimization Complete!</b>\n\n{report}",
+                f"✅ <b>MongoDB Storage Optimization Complete!</b>\n\n<code>{html.escape(str(report))}</code>",
             )
         except Exception as e:
             return await safe_edit_text(
@@ -481,7 +513,6 @@ async def freedb_command_handler(client: Client, message: Message):
                 f"⚠️ <b>Optimization Error:</b> <code>{html.escape(str(e))}</code>",
             )
 
-    # Fallback direct cleanup if helper not exported
     try:
         col = getattr(_Media, "collection", _Media)
         if col is not None:
@@ -593,7 +624,6 @@ async def _prompt_index_confirmation(
             f"⚠️ <b>Error fetching channel:</b> <code>{html.escape(str(e))}</code>",
         )
 
-    # Check how many bots are available in the Multi-Bot pool
     active_bots = await get_indexing_clients(client)
     bot_count = len(active_bots)
     start_skip = (
@@ -613,7 +643,7 @@ async def _prompt_index_confirmation(
     mode_badge = (
         f"⚡ <b>Multi-Bot Parallel ({bot_count} Bots Splitting Load)</b>"
         if bot_count > 1
-        else "🤖 <b>Single Bot Mode</b> (Add more bots via <code>/bots</code> for 10x speed!)"
+        else "🤖 <b>Single Bot Mode</b> (Add unlimited bots via <code>/bots</code> for ultra-fast speed!)"
     )
 
     buttons = [
@@ -681,7 +711,7 @@ async def index_command(client: Client, message: Message):
             f"1️⃣ <b>Forward the last message</b> from your channel to the bot, OR\n"
             f"2️⃣ <b>Reply to a Channel Post Link</b> with <code>/{cmd}</code>, OR\n"
             f"3️⃣ Send: <code>/{cmd} https://t.me/c/123456789/1000000</code>\n\n"
-            f"💡 <i>Tip: Use <code>/bots</code> to add up to 10 Worker Bots for 10x faster parallel indexing!</i>",
+            f"💡 <i>Tip: Use <code>/bots</code> to add unlimited Worker Bots for parallel indexing!</i>",
         )
 
     await _prompt_index_confirmation(
@@ -741,7 +771,6 @@ async def resume_index_command(client: Client, message: Message):
     )
 
 
-# Automatic Private Forwarded Channel Message / Link Catcher for Admins
 @Client.on_message(
     filters.private
     & filters.incoming
@@ -844,19 +873,26 @@ async def _verify_worker_channel_access(
 ) -> Tuple[List[Client], List[str]]:
     """
     Verifies which bots in the pool can read messages in the target channel
-    and warms up their peer cache so `get_messages` never raises PeerIdInvalid.
+    and warms up their peer cache concurrently so `get_messages` never raises PeerIdInvalid.
     """
     usable_clients: List[Client] = []
     skipped_bots: List[str] = []
 
-    for c in clients:
+    async def _check_bot(c: Client):
         b_name = getattr(c.me, "first_name", "Bot") if getattr(c, "me", None) else "Bot"
         b_uname = getattr(c.me, "username", "") if getattr(c, "me", None) else ""
         label = f"{b_name} (@{b_uname})" if b_uname else b_name
         try:
             await c.get_chat(chat_id)
-            usable_clients.append(c)
+            return c, label, True
         except Exception:
+            return c, label, False
+
+    results = await asyncio.gather(*[_check_bot(c) for c in clients])
+    for c, label, ok in results:
+        if ok:
+            usable_clients.append(c)
+        else:
             skipped_bots.append(label)
 
     return usable_clients, skipped_bots
@@ -874,7 +910,7 @@ async def run_distributed_indexing(
         temp.CANCEL = False
         start_time = time.time()
 
-        # 1. Discover all active bots (Main Bot + up to 10 Worker Bots from /bots)
+        # 1. Discover all active bots (Main Bot + Unlimited Worker Bots from /bots)
         candidate_clients = await get_indexing_clients(main_bot)
         usable_clients, skipped_bots = await _verify_worker_channel_access(
             candidate_clients, chat_id
@@ -897,7 +933,6 @@ async def run_distributed_indexing(
             return
 
         num_bots = len(usable_clients)
-        # Partition [start_skip + 1 ... last_msg_id] evenly across all usable bots
         slice_size = math.ceil(total_range / num_bots)
         bot_ranges: List[Tuple[Client, int, int, str]] = []
 
@@ -912,7 +947,6 @@ async def run_distributed_indexing(
                 )
                 bot_ranges.append((client_obj, w_start, w_end, b_uname))
 
-        # Shared real-time statistics across all parallel workers
         stats: Dict[str, Any] = {
             "processed": 0,
             "saved": 0,
@@ -947,7 +981,6 @@ async def run_distributed_indexing(
             reply_markup=cancel_markup,
         )
 
-        # Worker coroutine: each bot independently fetches chunks of 200 in its assigned ID range
         async def _worker_task(
             worker_client: Client, w_start: int, w_end: int, b_label: str
         ):
@@ -1021,14 +1054,12 @@ async def run_distributed_indexing(
                     b_label
                 ] = f"{chunk_end:,} / {w_end:,} ({pct:.1f}%)"
 
-                # Save checkpoint periodically for single-bot or first worker
                 if chunk_end % 2000 == 0:
                     temp.CURRENT = chunk_end
                     await save_index_checkpoint(
                         chat_id, chunk_end, last_msg_id, media_filter
                     )
 
-        # Live UI progress updater (updates Telegram message every 5 seconds to avoid FloodWait)
         workers_done = False
 
         async def _ui_progress_loop():
@@ -1043,10 +1074,15 @@ async def run_distributed_indexing(
                 eta_str = format_eta(remaining / speed if speed > 0 else 0)
                 pct_total = min(100.0, (proc / total_range) * 100)
 
+                prog_items = list(stats["worker_progress"].items())
                 worker_lines = "\n".join(
                     f"├ 🤖 <code>{lbl}</code>: <code>{prog}</code>"
-                    for lbl, prog in list(stats["worker_progress"].items())[:11]
+                    for lbl, prog in prog_items[:15]
                 )
+                if len(prog_items) > 15:
+                    worker_lines += (
+                        f"\n└ <i>...and {len(prog_items) - 15} more parallel workers</i>"
+                    )
 
                 progress_text = (
                     f"⚡ <b>Distributed Multi-Bot Indexing Live</b>\n"
@@ -1064,7 +1100,7 @@ async def run_distributed_indexing(
                     f"<b>Worker Partitions:</b>\n{worker_lines}"
                 )
                 if skipped_bots:
-                    progress_text += f"\n\n⚠️ <i>Bots not Admin in channel: {', '.join(skipped_bots[:3])}</i>"
+                    progress_text += f"\n\n⚠️ <i>Bots not Admin in channel: {', '.join(skipped_bots[:5])}</i>"
 
                 await safe_edit_text(
                     status_msg, progress_text, reply_markup=cancel_markup
