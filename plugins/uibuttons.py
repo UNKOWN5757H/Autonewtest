@@ -622,7 +622,11 @@ except Exception as e:
 async def get_pm_settings(force_refresh: bool = False) -> Dict[str, Any]:
     global _PM_SETTINGS_CACHE
     now = time.time()
-    if not force_refresh and _PM_SETTINGS_CACHE[1] and (now - _PM_SETTINGS_CACHE[0]) < 120:
+    if (
+        not force_refresh
+        and _PM_SETTINGS_CACHE[1]
+        and (now - _PM_SETTINGS_CACHE[0]) < 120
+    ):
         return _PM_SETTINGS_CACHE[1]
 
     default_settings = {
