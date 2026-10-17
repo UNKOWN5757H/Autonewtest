@@ -25,11 +25,12 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Primary MongoDB Connection
+# ============================================================
+# 🗄️ 3-DATABASE AUTO-SHARDING SETUP (1.5 GB FREE TIER)
+# ============================================================
 db = AsyncIOMotorClient(DATABASE_URI)[DATABASE_NAME]
 instance = MotorAsyncIOInstance(db)
 
-# Optional Secondary MongoDB Connection (if SECOND_DATABASE_URI is set in info.py / env)
 SECOND_DATABASE_URI = getattr(info, "SECOND_DATABASE_URI", "") or ""
 db2 = (
     AsyncIOMotorClient(SECOND_DATABASE_URI)[DATABASE_NAME]
@@ -37,8 +38,15 @@ db2 = (
     else None
 )
 
+THIRD_DATABASE_URI = getattr(info, "THIRD_DATABASE_URI", "") or ""
+db3 = (
+    AsyncIOMotorClient(THIRD_DATABASE_URI)[DATABASE_NAME]
+    if THIRD_DATABASE_URI and THIRD_DATABASE_URI not in [DATABASE_URI, SECOND_DATABASE_URI]
+    else None
+)
+
+ACTIVE_DB_INDEX = 1  # 1=db, 2=db2, 3=db3
 KNOWN_TITLES = set()
-_PRIMARY_DB_QUOTA_FULL = False
 
 
 class SimpleCache:
@@ -91,7 +99,7 @@ def add_to_vocab(file_name):
 
 
 def encode_file_id(s_pack, file_ref):
-    """Reconstructs valid Pyrogram V2 File IDs from compact `_id` + `file_ref` chunks."""
+    """Reconstructs valid Pyrogram V2 File IDs from ultra-compact `_id` + `file_ref` chunks."""
     try:
         s_unpack = unpack(
             "<iiqq", base64.urlsafe_b64decode(s_pack + "=" * (-len(s_pack) % 4))
@@ -158,88 +166,64 @@ class SafeMediaWrapper:
 
 async def free_up_mongodb_storage() -> Dict[str, Any]:
     """
-    Emergency 512MB MongoDB Quota Optimizer:
-    1. Drops massive redundant text indexes (`media_text_index`, `file_name_text`) which consume 120MB-200MB!
-    2. Purges temporary collections (`index_resume`, `broadcast_tasks`, `countdown_tasks`).
-    3. Strips redundant `file_id_raw`, `mime_type`, and long `caption` fields from media documents
-       (since `encode_file_id(_id, file_ref)` reconstructs the exact Pyrogram FileId automatically!).
+    Extreme 512MB MongoDB Quota Optimizer:
+    1. Drops heavy text indexes.
+    2. Deletes temporary cache collections.
+    3. Unsets unused keys to shrink DB by ~60%.
     """
-    global _PRIMARY_DB_QUOTA_FULL
+    global ACTIVE_DB_INDEX
     report = {
         "dropped_indexes": [],
         "cleared_temp_docs": 0,
         "compacted_files": 0,
-        "before_mb": 0.0,
-        "after_mb": 0.0,
     }
 
-    try:
-        stats_before = await db.command("dbstats")
-        report["before_mb"] = round(
-            (stats_before.get("dataSize", 0) + stats_before.get("indexSize", 0))
-            / (1024 * 1024),
-            2,
-        )
-    except Exception:
-        pass
-
-    # 1. Drop heavy text indexes on primary collection (frees 100MB-200MB immediately!)
-    try:
-        indexes = await db[COLLECTION_NAME].index_information()
-        for idx_name in list(indexes.keys()):
-            if idx_name != "_id_":
-                try:
-                    await db[COLLECTION_NAME].drop_index(idx_name)
-                    report["dropped_indexes"].append(idx_name)
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-    # 2. Delete temporary/ephemeral collections that work EVEN when over 512MB quota
-    for temp_col in (
-        "index_resume",
-        "broadcast_tasks",
-        "countdown_tasks",
-        "fsub_join_requests",
-        "fsub_verified_users",
-        "fsub_users",
-    ):
+    dbs = [db, db2, db3]
+    for target_db in [d for d in dbs if d is not None]:
         try:
-            res = await db[temp_col].delete_many({})
-            report["cleared_temp_docs"] += getattr(res, "deleted_count", 0)
+            indexes = await target_db[COLLECTION_NAME].index_information()
+            for idx_name in list(indexes.keys()):
+                if idx_name != "_id_":
+                    try:
+                        await target_db[COLLECTION_NAME].drop_index(idx_name)
+                        report["dropped_indexes"].append(idx_name)
+                    except Exception:
+                        pass
         except Exception:
             pass
 
-    # 3. Once index drop frees space below 512MB, strip bloated fields (`file_id_raw`, `mime_type`)
-    try:
-        unset_fields = {"file_id_raw": "", "mime_type": ""}
-        if not USE_CAPTION_FILTER:
-            unset_fields["caption"] = ""
-        res_upd = await db[COLLECTION_NAME].update_many(
-            {
-                "$or": [
-                    {"file_id_raw": {"$exists": True}},
-                    {"mime_type": {"$exists": True}},
-                ]
-            },
-            {"$unset": unset_fields},
-        )
-        report["compacted_files"] = getattr(res_upd, "modified_count", 0)
-        _PRIMARY_DB_QUOTA_FULL = False
-    except Exception:
-        pass
+        for temp_col in (
+            "index_resume",
+            "broadcast_tasks",
+            "countdown_tasks",
+            "fsub_join_requests",
+            "fsub_verified_users",
+            "fsub_users",
+        ):
+            try:
+                res = await target_db[temp_col].delete_many({})
+                report["cleared_temp_docs"] += getattr(res, "deleted_count", 0)
+            except Exception:
+                pass
 
-    try:
-        stats_after = await db.command("dbstats")
-        report["after_mb"] = round(
-            (stats_after.get("dataSize", 0) + stats_after.get("indexSize", 0))
-            / (1024 * 1024),
-            2,
-        )
-    except Exception:
-        pass
+        try:
+            unset_fields = {"file_id_raw": "", "mime_type": ""}
+            if not USE_CAPTION_FILTER:
+                unset_fields["caption"] = ""
+            res_upd = await target_db[COLLECTION_NAME].update_many(
+                {
+                    "$or": [
+                        {"file_id_raw": {"$exists": True}},
+                        {"mime_type": {"$exists": True}},
+                    ]
+                },
+                {"$unset": unset_fields},
+            )
+            report["compacted_files"] += getattr(res_upd, "modified_count", 0)
+        except Exception:
+            pass
 
+    ACTIVE_DB_INDEX = 1
     search_cache.clear()
     return report
 
@@ -252,13 +236,13 @@ async def get_search_results(
     filter=False,
     is_autocorrect=False,
 ):
+    """Searches seamlessly across all 3 databases to retrieve files."""
     cache_key = f"{query_text}_{file_type}_{max_results}_{offset}_{filter}"
     if cached := search_cache.get(cache_key):
         return cached
 
     try:
         from utils import parse_ultra_advanced_query
-
         parsed = parse_ultra_advanced_query(query_text)
     except Exception:
         parsed = {}
@@ -318,7 +302,10 @@ async def get_search_results(
         mongo_query = {"$and": [mongo_query, {"file_type": file_type}]}
 
     fetch_limit = max_results + 1
-    files = (
+    files = []
+    
+    # Query DB 1
+    files.extend(
         await db[COLLECTION_NAME]
         .find(mongo_query)
         .sort("_id", -1)
@@ -327,9 +314,10 @@ async def get_search_results(
         .to_list(length=fetch_limit)
     )
 
+    # Query DB 2 if DB 1 didn't have enough
     if db2 is not None and len(files) < fetch_limit:
         rem = fetch_limit - len(files)
-        extra_files = (
+        files.extend(
             await db2[COLLECTION_NAME]
             .find(mongo_query)
             .sort("_id", -1)
@@ -337,7 +325,18 @@ async def get_search_results(
             .limit(rem)
             .to_list(length=rem)
         )
-        files.extend(extra_files)
+
+    # Query DB 3 if DB 1 & 2 didn't have enough
+    if db3 is not None and len(files) < fetch_limit:
+        rem = fetch_limit - len(files)
+        files.extend(
+            await db3[COLLECTION_NAME]
+            .find(mongo_query)
+            .sort("_id", -1)
+            .skip(max(0, offset - len(files)))
+            .limit(rem)
+            .to_list(length=rem)
+        )
 
     has_more = len(files) > max_results
     if has_more:
@@ -377,11 +376,7 @@ async def get_search_results(
 
 
 def _build_compact_media_doc(media) -> Optional[dict]:
-    """
-    Builds an ultra-compact media document (~65% smaller in MongoDB!).
-    Omits `file_id_raw`, `mime_type`, and `caption` (unless USE_CAPTION_FILTER is True)
-    because `SafeMediaWrapper` reconstructs the full Pyrogram V2 FileId from `_id` + `file_ref`!
-    """
+    """Builds ultra-compact media document (~65% smaller) to save quota."""
     try:
         file_id, file_ref = unpack_new_file_id(media.file_id)
         file_name = re.sub(
@@ -407,61 +402,44 @@ def _build_compact_media_doc(media) -> Optional[dict]:
 
 
 async def save_file(media) -> Tuple[bool, int]:
-    """
-    Saves a single media object into MongoDB.
-    Returns:
-      (True, 1)  -> Saved
-      (False, 0) -> Duplicate
-      (False, 3) -> MongoDB 512MB Storage Quota Full (Code 8000)
-      (False, 2) -> Other Error
-    """
-    global _PRIMARY_DB_QUOTA_FULL
+    """Saves a single file, automatically jumping to DB2 or DB3 if quota is full."""
+    global ACTIVE_DB_INDEX
     doc = _build_compact_media_doc(media)
     if not doc:
         return False, 2
 
-    target_db = db2 if (_PRIMARY_DB_QUOTA_FULL and db2 is not None) else db
+    for i in range(ACTIVE_DB_INDEX, 4):
+        target_db = db if i == 1 else (db2 if i == 2 else db3)
+        if not target_db:
+            continue
 
-    try:
-        await target_db[COLLECTION_NAME].insert_one(doc)
-        search_cache.clear()
-        wrapped = SafeMediaWrapper(doc)
-        file_details_cache.set(str(doc["_id"]), [wrapped])
-        return True, 1
-    except DuplicateKeyError:
-        return False, 0
-    except OperationFailure as e:
-        if _is_quota_error(e):
-            _PRIMARY_DB_QUOTA_FULL = True
-            if target_db is db and db2 is not None:
-                try:
-                    await db2[COLLECTION_NAME].insert_one(doc)
-                    search_cache.clear()
-                    wrapped = SafeMediaWrapper(doc)
-                    file_details_cache.set(str(doc["_id"]), [wrapped])
-                    return True, 1
-                except DuplicateKeyError:
-                    return False, 0
-                except Exception:
-                    return False, 3
-            return False, 3
-        logger.error(f"save_file OperationFailure: {e}")
-        return False, 2
-    except Exception as e:
-        if _is_quota_error(e):
-            _PRIMARY_DB_QUOTA_FULL = True
-            return False, 3
-        logger.error(f"save_file error: {e}")
-        return False, 2
+        try:
+            await target_db[COLLECTION_NAME].insert_one(doc)
+            ACTIVE_DB_INDEX = i
+            search_cache.clear()
+            wrapped = SafeMediaWrapper(doc)
+            file_details_cache.set(str(doc["_id"]), [wrapped])
+            return True, 1
+        except DuplicateKeyError:
+            return False, 0
+        except OperationFailure as e:
+            if _is_quota_error(e):
+                ACTIVE_DB_INDEX = i + 1
+                continue
+            return False, 2
+        except Exception as e:
+            if _is_quota_error(e):
+                ACTIVE_DB_INDEX = i + 1
+                continue
+            logger.error(f"save_file error: {e}")
+            return False, 2
+
+    return False, 3  # Code 3 = All 3 Databases are Full!
 
 
 async def save_batch(media_list) -> Tuple[int, int, int]:
-    """
-    Saves a batch of media objects.
-    Raises OperationFailure (Code 8000) if all configured MongoDB clusters are 100% out of space
-    so `plugins/index.py` can pause cleanly instead of looping infinitely.
-    """
-    global _PRIMARY_DB_QUOTA_FULL
+    """Saves a batch of media, automatically jumping to DB2 or DB3 if quota is full."""
+    global ACTIVE_DB_INDEX
     if not media_list:
         return 0, 0, 0
 
@@ -474,62 +452,65 @@ async def save_batch(media_list) -> Tuple[int, int, int]:
     if not documents:
         return 0, 0, len(media_list)
 
-    target_db = db2 if (_PRIMARY_DB_QUOTA_FULL and db2 is not None) else db
+    for i in range(ACTIVE_DB_INDEX, 4):
+        target_db = db if i == 1 else (db2 if i == 2 else db3)
+        if not target_db:
+            continue
 
-    try:
-        res = await target_db[COLLECTION_NAME].insert_many(documents, ordered=False)
-        search_cache.clear()
-        return len(res.inserted_ids), 0, 0
-    except BulkWriteError as bwe:
-        search_cache.clear()
-        write_errors = bwe.details.get("writeErrors", [])
-        if any(
-            err.get("code") == 8000
-            or "space quota" in str(err.get("errmsg", "")).lower()
-            for err in write_errors
-        ):
-            _PRIMARY_DB_QUOTA_FULL = True
-            if target_db is db and db2 is not None:
-                return await save_batch(media_list)
-            raise OperationFailure(
-                "MongoDB 512MB Space Quota Reached (Code 8000).", code=8000
+        try:
+            res = await target_db[COLLECTION_NAME].insert_many(documents, ordered=False)
+            ACTIVE_DB_INDEX = i
+            search_cache.clear()
+            return len(res.inserted_ids), 0, 0
+        except BulkWriteError as bwe:
+            search_cache.clear()
+            write_errors = bwe.details.get("writeErrors", [])
+            
+            # Check if any error is a quota error
+            is_quota = any(
+                err.get("code") == 8000 or "space quota" in str(err.get("errmsg", "")).lower()
+                for err in write_errors
             )
+            
+            if is_quota:
+                ACTIVE_DB_INDEX = i + 1
+                continue # Retry with next DB
+                
+            inserted = bwe.details.get("nInserted", 0)
+            duplicates = sum(1 for err in write_errors if err.get("code") == 11000)
+            return inserted, duplicates, len(media_list) - inserted - duplicates
+        except OperationFailure as e:
+            if _is_quota_error(e):
+                ACTIVE_DB_INDEX = i + 1
+                continue
+            return 0, 0, len(media_list)
+        except Exception as e:
+            if _is_quota_error(e):
+                ACTIVE_DB_INDEX = i + 1
+                continue
+            return 0, 0, len(media_list)
 
-        inserted = bwe.details.get("nInserted", 0)
-        duplicates = sum(1 for err in write_errors if err.get("code") == 11000)
-        return inserted, duplicates, len(media_list) - inserted - duplicates
-    except OperationFailure as e:
-        if _is_quota_error(e):
-            _PRIMARY_DB_QUOTA_FULL = True
-            if target_db is db and db2 is not None:
-                return await save_batch(media_list)
-            raise
-        return 0, 0, len(media_list)
+    raise OperationFailure("ALL 3 MONGODB CLUSTERS ARE FULL (Code 8000).", code=8000)
 
 
 async def get_file_details(query):
-    """Instant RAM-cached lookup for file details across primary and secondary DBs."""
+    """Instant RAM-cached lookup across all 3 databases."""
     q_str = str(query).strip()
     if cached := file_details_cache.get(q_str):
         return cached
 
-    doc = await db[COLLECTION_NAME].find_one({"_id": q_str})
-    if not doc and len(q_str) >= 20:
-        doc = await db[COLLECTION_NAME].find_one(
-            {"_id": {"$regex": f"^{re.escape(q_str)}"}}
-        )
-
-    if not doc and db2 is not None:
-        doc = await db2[COLLECTION_NAME].find_one({"_id": q_str})
+    dbs = [db, db2, db3]
+    for target_db in [d for d in dbs if d is not None]:
+        doc = await target_db[COLLECTION_NAME].find_one({"_id": q_str})
         if not doc and len(q_str) >= 20:
-            doc = await db2[COLLECTION_NAME].find_one(
+            doc = await target_db[COLLECTION_NAME].find_one(
                 {"_id": {"$regex": f"^{re.escape(q_str)}"}}
             )
+        if doc:
+            wrapped = [SafeMediaWrapper(doc)]
+            file_details_cache.set(q_str, wrapped)
+            return wrapped
 
-    if doc:
-        wrapped = [SafeMediaWrapper(doc)]
-        file_details_cache.set(q_str, wrapped)
-        return wrapped
     return []
 
 
