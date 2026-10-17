@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import logging
 import re
@@ -23,17 +24,17 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)
 
 # ============================================================
-# 🗄️ 3-DATABASE FAULT-TOLERANT SETUP (FAST TIMEOUTS & FAILOVER)
+# 🗄️ 3-DATABASE FAULT-TOLERANT SETUP (NO TIMEOUTS ON LARGE OPS)
 # ============================================================
 _MONGO_KWARGS = {
-    "serverSelectionTimeoutMS": 4000,
-    "connectTimeoutMS": 4000,
-    "socketTimeoutMS": 8000,
+    "serverSelectionTimeoutMS": 6000,
+    "connectTimeoutMS": 6000,
+    "socketTimeoutMS": 60000,
     "retryWrites": True,
 }
 
-SECOND_DATABASE_URI = getattr(info, "SECOND_DATABASE_URI", "") or ""
-THIRD_DATABASE_URI = getattr(info, "THIRD_DATABASE_URI", "") or ""
+SECOND_DATABASE_URI = (getattr(info, "SECOND_DATABASE_URI", "") or "").strip()
+THIRD_DATABASE_URI = (getattr(info, "THIRD_DATABASE_URI", "") or "").strip()
 
 SECOND_DATABASE_NAME = (
     getattr(info, "SECOND_DATABASE_NAME", DATABASE_NAME) or DATABASE_NAME
@@ -59,12 +60,8 @@ db3 = (
 )
 
 # Circuit-breaker trackers so a broken/full DB never freezes the bot or spams logs
-_DEAD_READ_DBS: Dict[int, float] = (
-    {}
-)  # db_idx -> cooldown_until_ts (for bad auth / paused pool)
-_QUOTA_FULL_DBS: Dict[int, float] = (
-    {}
-)  # db_idx -> cooldown_until_ts (for 512MB quota full)
+_DEAD_READ_DBS: Dict[int, float] = {}  # db_idx -> cooldown_until_ts
+_QUOTA_FULL_DBS: Dict[int, float] = {}  # db_idx -> cooldown_until_ts
 
 ACTIVE_DB_INDEX = 1  # 1=db, 2=db2, 3=db3
 KNOWN_TITLES = set()
@@ -84,7 +81,6 @@ def get_writable_System_db():
         if now < _QUOTA_FULL_DBS.get(idx, 0.0):
             continue
         return target
-    # Fallback to db2 or db3 if db1 is full
     for idx, target in ((2, db2), (3, db3), (1, db)):
         if target is not None and now >= _DEAD_READ_DBS.get(idx, 0.0):
             return target
@@ -118,16 +114,14 @@ def _is_auth_or_conn_error(exc: Exception) -> bool:
 
 def _is_quota_error(exc: Exception) -> bool:
     msg = str(exc).lower()
-    return "space quota" in msg or "over your space" in msg
+    return "space quota" in msg or "over your space" in msg or "8000" in msg
 
 
 def mark_db_error(idx: int, exc: Exception):
     now = time.time()
     if _is_quota_error(exc):
-        # Mute writes to this full DB for 30 minutes
         _QUOTA_FULL_DBS[idx] = now + 1800
     elif _is_auth_or_conn_error(exc):
-        # Mute reads & writes to this broken-auth DB for 30 minutes so searches take 0ms
         _DEAD_READ_DBS[idx] = now + 1800
 
 
@@ -240,11 +234,184 @@ class SafeMediaWrapper:
         return getattr(self, key)
 
 
+# ============================================================
+# 🔥 INSTANT 3-DATABASE WIPE & LIVE 3-DATABASE STATS ENGINE
+# ============================================================
+async def nuke_all_media_dbs() -> Dict[str, Any]:
+    """
+    Instantly wipes all movie/media files from DB 1, DB 2, and DB 3 using `.drop()`
+    so it NEVER hits `pymongo.errors.NetworkTimeout` even with 10 lakh+ files!
+    """
+    global ACTIVE_DB_INDEX
+    summary = {
+        "db1_deleted": 0,
+        "db2_deleted": 0,
+        "db3_deleted": 0,
+        "total_deleted": 0,
+        "dbs_cleared": [],
+    }
+
+    for idx, target_db in ((1, db), (2, db2), (3, db3)):
+        if target_db is None:
+            continue
+
+        col = target_db[COLLECTION_NAME]
+        count = 0
+        try:
+            count = await col.estimated_document_count()
+            if count == 0:
+                count = await col.count_documents({})
+        except Exception:
+            pass
+
+        wiped = False
+        try:
+            # `.drop()` executes in <50ms regardless of collection size and frees 100% of disk space!
+            await col.drop()
+            wiped = True
+        except Exception:
+            try:
+                res = await col.delete_many({})
+                count = max(count, getattr(res, "deleted_count", 0))
+                wiped = True
+            except Exception as e:
+                logger.error(f"Failed to wipe DB {idx}: {e}")
+
+        if wiped:
+            summary[f"db{idx}_deleted"] = count
+            summary["total_deleted"] += count
+            summary["dbs_cleared"].append(f"DB {idx} ({count:,} files)")
+
+        # Also clean up any genlink / checkpoint temp collections on this DB
+        for extra_col in ("genlink_files", "genlink_batches", "index_checkpoints", "index_resume"):
+            try:
+                await target_db[extra_col].drop()
+            except Exception:
+                pass
+
+    _QUOTA_FULL_DBS.clear()
+    _DEAD_READ_DBS.clear()
+    ACTIVE_DB_INDEX = 1
+    search_cache.clear()
+    file_details_cache.clear()
+    KNOWN_TITLES.clear()
+
+    try:
+        import plugins.pm_filter as _pmf
+
+        _pmf.GLOBAL_SEARCH_CACHE._data.clear()
+        _pmf.POOL_SEARCH_CACHE._data.clear()
+        _pmf.FUZZY_TITLES_CACHE._data.clear()
+    except Exception:
+        pass
+
+    return summary
+
+
+async def _fetch_single_db_stats(idx: int, target_db: Any) -> Dict[str, Any]:
+    quota_limit = 536870912  # 512 MB in bytes
+    if target_db is None:
+        return {
+            "index": idx,
+            "configured": False,
+            "status": "⚪ Not Configured",
+            "files": 0,
+            "used_bytes": 0,
+            "free_bytes": 0,
+        }
+
+    try:
+        col = target_db[COLLECTION_NAME]
+
+        async def _get_cnt():
+            try:
+                c = await col.count_documents({})
+                return int(c)
+            except Exception:
+                return int(await col.estimated_document_count())
+
+        async def _get_dbstats():
+            return await target_db.command("dbstats")
+
+        files_cnt, db_stats = await asyncio.wait_for(
+            asyncio.gather(_get_cnt(), _get_dbstats(), return_exceptions=True),
+            timeout=6.0,
+        )
+
+        if isinstance(files_cnt, Exception):
+            raise files_cnt
+        if isinstance(db_stats, Exception):
+            db_stats = {}
+
+        data_size = int(db_stats.get("dataSize", 0) or 0)
+        storage_size = int(db_stats.get("storageSize", 0) or 0)
+        index_size = int(db_stats.get("indexSize", 0) or 0)
+        used_bytes = max(data_size + index_size, storage_size)
+        free_bytes = max(0, quota_limit - used_bytes)
+
+        is_full = (
+            used_bytes >= (500 * 1024 * 1024)
+            or time.time() < _QUOTA_FULL_DBS.get(idx, 0.0)
+        )
+        status = "⚠️ Quota Full" if is_full else "🟢 Connected"
+        _DEAD_READ_DBS.pop(idx, None)
+
+        return {
+            "index": idx,
+            "configured": True,
+            "status": status,
+            "files": int(files_cnt or 0),
+            "used_bytes": used_bytes,
+            "free_bytes": free_bytes,
+        }
+    except Exception as e:
+        mark_db_error(idx, e)
+        return {
+            "index": idx,
+            "configured": True,
+            "status": "🔴 Error / Unreachable",
+            "files": 0,
+            "used_bytes": 0,
+            "free_bytes": 0,
+        }
+
+
+async def get_all_dbs_stats() -> Dict[str, Any]:
+    """
+    Queries DB 1, DB 2, and DB 3 in parallel and returns individual + combined
+    file counts, used storage, and free storage.
+    """
+    r1, r2, r3 = await asyncio.gather(
+        _fetch_single_db_stats(1, db),
+        _fetch_single_db_stats(2, db2),
+        _fetch_single_db_stats(3, db3),
+    )
+    dbs_list = [r1, r2, r3]
+    configured_dbs = [d for d in dbs_list if d["configured"]]
+
+    total_files = sum(d["files"] for d in configured_dbs)
+    total_used_bytes = sum(d["used_bytes"] for d in configured_dbs)
+    total_free_bytes = sum(d["free_bytes"] for d in configured_dbs)
+    total_capacity_bytes = len(configured_dbs) * 536870912
+
+    return {
+        "db1": r1,
+        "db2": r2,
+        "db3": r3,
+        "configured_count": len(configured_dbs),
+        "active_db_index": ACTIVE_DB_INDEX,
+        "total_files": total_files,
+        "total_used_bytes": total_used_bytes,
+        "total_free_bytes": total_free_bytes,
+        "total_capacity_bytes": total_capacity_bytes,
+    }
+
+
 async def free_up_mongodb_storage() -> Dict[str, Any]:
     """
     Extreme 512MB MongoDB Quota Optimizer:
     1. Drops heavy text indexes.
-    2. Deletes temporary cache collections (join requests, resume checkpoints, etc.).
+    2. Deletes temporary cache collections.
     3. Unsets unused keys to shrink DB by ~60%.
     """
     global ACTIVE_DB_INDEX
@@ -316,11 +483,7 @@ async def get_search_results(
     filter=False,
     is_autocorrect=False,
 ):
-    """
-    Searches seamlessly across all healthy databases.
-    If DB2 or DB3 has `bad auth` or `connection pool paused`, it is automatically
-    skipped so DB1 results are returned in <50ms without any error!
-    """
+    """Searches seamlessly across all healthy databases (DB 1, DB 2, and DB 3)."""
     cache_key = f"{query_text}_{file_type}_{max_results}_{offset}_{filter}"
     if cached := search_cache.get(cache_key):
         return cached
@@ -505,7 +668,7 @@ async def save_file(media) -> Tuple[bool, int]:
                 continue
             return False, 2
 
-    return False, 8000  # Code 8000 = All available Databases are Full or Unreachable!
+    return False, 8000
 
 
 async def save_batch(media_list) -> Tuple[int, int, int]:
@@ -543,7 +706,8 @@ async def save_batch(media_list) -> Tuple[int, int, int]:
             write_errors = bwe.details.get("writeErrors", [])
 
             is_quota = any(
-                "space quota" in str(err.get("errmsg", "")).lower()
+                err.get("code") == 8000
+                or "space quota" in str(err.get("errmsg", "")).lower()
                 or "over your space" in str(err.get("errmsg", "")).lower()
                 for err in write_errors
             )
