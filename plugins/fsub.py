@@ -31,6 +31,18 @@ import info
 from database.ia_filterdb import get_file_details
 from utils import get_size, parse_text_and_markup
 
+# Safe optional imports for multi-database health helpers
+try:
+    from database.ia_filterdb import (
+        get_all_healthy_read_dbs,
+        get_writable_System_db,
+        mark_db_error,
+    )
+except ImportError:
+    get_all_healthy_read_dbs = None
+    get_writable_System_db = None
+    mark_db_error = None
+
 logger = getLogger(__name__)
 logger.setLevel(ERROR)
 
@@ -354,13 +366,16 @@ def schedule_auto_delete(
 
 
 # ============================================================
-# ⚙️ MONGODB PERMANENT FSUB & FAST IN-MEMORY CACHE ENGINE
+# ⚙️ QUOTA-SAFE MONGODB FSUB & FAST IN-MEMORY CACHE ENGINE
 # ============================================================
 _fsub_db = None
 _active_db = None
 _fsub_reqs_db = None
 _fsub_users_db = None
 _BOT_DB = None
+
+# Circuit breaker so a full 512MB DB never logs errors on join requests
+_FSUB_DB_QUOTA_FULL_UNTIL: float = 0.0
 
 # Ultra-fast in-memory caches so ForceSub checks don't wait on DB or Telegram API round-trips
 _FSUB_CONFIG_CACHE: Optional[dict] = None
@@ -373,7 +388,12 @@ _VERIFIED_MEMBER_CACHE: Dict[Tuple[int, int], float] = {}
 _JOIN_REQ_RAM_CACHE: set = set()
 
 try:
-    _DB_CLIENT = AsyncIOMotorClient(info.DATABASE_URI)
+    _DB_CLIENT = AsyncIOMotorClient(
+        info.DATABASE_URI,
+        serverSelectionTimeoutMS=4000,
+        connectTimeoutMS=4000,
+        socketTimeoutMS=8000,
+    )
     _BOT_DB = _DB_CLIENT[info.DATABASE_NAME]
     _fsub_db = _BOT_DB["fsub_config"]
     _active_db = _BOT_DB["active_connections"]
@@ -381,6 +401,29 @@ try:
     _fsub_users_db = _BOT_DB["fsub_verified_users"]
 except Exception as e:
     logger.error(f"Failed to init FSub DB: {e}")
+
+
+def _get_writable_col(col_name: str, fallback_col: Any):
+    if callable(get_writable_System_db):
+        try:
+            target_db = get_writable_System_db()
+            if target_db is not None:
+                return target_db[col_name]
+        except Exception:
+            pass
+    return fallback_col
+
+
+def _is_quota_or_auth_err(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return (
+        "space quota" in s
+        or "over your space" in s
+        or "8000" in s
+        or "bad auth" in s
+        or "authentication failed" in s
+        or "paused" in s
+    )
 
 
 async def get_fsub_config(force_refresh: bool = False) -> dict:
@@ -399,7 +442,23 @@ async def get_fsub_config(force_refresh: bool = False) -> dict:
         "rotation_enabled": False,
         "channels": {},
     }
-    if _fsub_db is not None:
+
+    if callable(get_all_healthy_read_dbs):
+        for idx, target_db in get_all_healthy_read_dbs():
+            try:
+                doc = await target_db["fsub_config"].find_one({"_id": "config"})
+                if doc:
+                    for k, v in default_cfg.items():
+                        if k not in doc:
+                            doc[k] = v
+                    _FSUB_CONFIG_CACHE = doc
+                    _FSUB_CACHE_TS = now
+                    return doc
+            except Exception as e:
+                if callable(mark_db_error):
+                    mark_db_error(idx, e)
+                continue
+    elif _fsub_db is not None:
         try:
             doc = await _fsub_db.find_one({"_id": "config"})
             if doc:
@@ -409,8 +468,12 @@ async def get_fsub_config(force_refresh: bool = False) -> dict:
                 _FSUB_CONFIG_CACHE = doc
                 _FSUB_CACHE_TS = now
                 return doc
-        except Exception as e:
-            logger.error(f"get_fsub_config error: {e}")
+        except Exception:
+            pass
+
+    if _FSUB_CONFIG_CACHE is not None:
+        _FSUB_CACHE_TS = now
+        return _FSUB_CONFIG_CACHE
 
     _FSUB_CONFIG_CACHE = default_cfg
     _FSUB_CACHE_TS = now
@@ -419,37 +482,60 @@ async def get_fsub_config(force_refresh: bool = False) -> dict:
 
 async def update_fsub_config(key: str, value: Any):
     global _FSUB_CONFIG_CACHE, _FSUB_CACHE_TS
-    if _fsub_db is not None:
-        await _fsub_db.update_one(
-            {"_id": "config"}, {"$set": {key: value}}, upsert=True
-        )
+    if _FSUB_CONFIG_CACHE is None:
+        await get_fsub_config()
     if _FSUB_CONFIG_CACHE is not None:
         _FSUB_CONFIG_CACHE[key] = value
         _FSUB_CACHE_TS = time.time()
+
+    target_col = _get_writable_col("fsub_config", _fsub_db)
+    if target_col is not None:
+        try:
+            await target_col.update_one(
+                {"_id": "config"}, {"$set": {key: value}}, upsert=True
+            )
+        except Exception:
+            # RAM cache is already updated if MongoDB is 512MB full
+            pass
 
 
 async def update_fsub_channels(channels_dict: dict):
     global _FSUB_CONFIG_CACHE, _FSUB_CACHE_TS
     _VERIFIED_MEMBER_CACHE.clear()
-    if _fsub_db is not None:
-        await _fsub_db.update_one(
-            {"_id": "config"}, {"$set": {"channels": channels_dict}}, upsert=True
-        )
+    if _FSUB_CONFIG_CACHE is None:
+        await get_fsub_config()
     if _FSUB_CONFIG_CACHE is not None:
         _FSUB_CONFIG_CACHE["channels"] = channels_dict
         _FSUB_CACHE_TS = time.time()
 
+    target_col = _get_writable_col("fsub_config", _fsub_db)
+    if target_col is not None:
+        try:
+            await target_col.update_one(
+                {"_id": "config"}, {"$set": {"channels": channels_dict}}, upsert=True
+            )
+        except Exception:
+            pass
+
 
 async def _bg_save_fsub_user(user_id: int):
-    if _fsub_users_db is not None:
+    global _FSUB_DB_QUOTA_FULL_UNTIL
+    if time.time() < _FSUB_DB_QUOTA_FULL_UNTIL:
+        return
+
+    target_col = _get_writable_col("fsub_verified_users", _fsub_users_db)
+    if target_col is not None:
         try:
-            await _fsub_users_db.update_one(
+            await target_col.update_one(
                 {"_id": int(user_id)},
                 {"$set": {"timestamp": time.time()}},
                 upsert=True,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            if _is_quota_or_auth_err(e):
+                _FSUB_DB_QUOTA_FULL_UNTIL = time.time() + 1800
+            return
+
     if _plugin_db is not None and hasattr(_plugin_db, "add_fsub_user"):
         try:
             await _plugin_db.add_fsub_user(user_id)
@@ -463,10 +549,11 @@ async def safe_add_fsub_user(user_id: int):
 
 
 async def get_total_fsub_users() -> int:
-    total = 0
+    total = len(_VERIFIED_MEMBER_CACHE)
     if _fsub_users_db is not None:
         try:
-            total = await _fsub_users_db.count_documents({})
+            db_cnt = await _fsub_users_db.count_documents({})
+            total = max(total, int(db_cnt or 0))
         except Exception:
             pass
     if _plugin_db is not None and hasattr(_plugin_db, "get_fsub_users_count"):
@@ -502,28 +589,40 @@ async def record_join_request(
     username: str = "None",
     date=None,
 ):
-    """Saves join requests in RAM cache (0ms) and MongoDB."""
+    """
+    Saves join requests in RAM cache (0ms) and attempts a quota-safe DB write.
+    Never logs errors when the 512MB MongoDB cluster is full!
+    """
+    global _FSUB_DB_QUOTA_FULL_UNTIL
     uid, cid = int(user_id), int(chat_id)
+    if len(_JOIN_REQ_RAM_CACHE) > 50000:
+        _JOIN_REQ_RAM_CACHE.clear()
     _JOIN_REQ_RAM_CACHE.add((cid, uid))
-    _VERIFIED_MEMBER_CACHE[(cid, uid)] = time.time() + 1800
+    _VERIFIED_MEMBER_CACHE[(cid, uid)] = time.time() + 3600
 
-    if _fsub_reqs_db is not None:
+    now = time.time()
+    if now < _FSUB_DB_QUOTA_FULL_UNTIL:
+        return
+
+    target_col = _get_writable_col("fsub_join_requests", _fsub_reqs_db)
+    if target_col is not None:
         try:
-            await _fsub_reqs_db.update_one(
+            await target_col.update_one(
                 {"user_id": uid, "chat_id": cid},
                 {
                     "$set": {
                         "user_id": uid,
                         "chat_id": cid,
-                        "first_name": first_name,
-                        "username": username,
-                        "timestamp": time.time(),
+                        "timestamp": now,
                     }
                 },
                 upsert=True,
             )
         except Exception as e:
-            logger.error(f"Native join request save error: {e}")
+            if _is_quota_or_auth_err(e):
+                # Mute DB writes for 30 minutes when 512MB quota is full; RAM cache handles verification
+                _FSUB_DB_QUOTA_FULL_UNTIL = now + 1800
+                return
 
     try:
         if _join_reqs_db and _join_reqs_db.isActive():
@@ -533,26 +632,30 @@ async def record_join_request(
                 username=username,
                 date=date,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        if _is_quota_or_auth_err(e):
+            _FSUB_DB_QUOTA_FULL_UNTIL = now + 1800
 
 
 async def has_join_request(user_id: int, chat_id: Optional[int] = None) -> bool:
-    """Checks RAM cache first (0ms), then MongoDB if needed."""
+    """Checks RAM cache first (0ms), then healthy MongoDB if needed."""
     uid = int(user_id)
     if chat_id is not None and (int(chat_id), uid) in _JOIN_REQ_RAM_CACHE:
         return True
+    if chat_id is None and any(u == uid for (_, u) in _JOIN_REQ_RAM_CACHE):
+        return True
 
-    if _fsub_reqs_db is not None:
+    target_col = _get_writable_col("fsub_join_requests", _fsub_reqs_db)
+    if target_col is not None:
         try:
             if chat_id is not None:
-                doc = await _fsub_reqs_db.find_one(
+                doc = await target_col.find_one(
                     {"user_id": uid, "chat_id": int(chat_id)}
                 )
                 if doc:
                     _JOIN_REQ_RAM_CACHE.add((int(chat_id), uid))
                     return True
-            doc_any = await _fsub_reqs_db.find_one({"user_id": uid})
+            doc_any = await target_col.find_one({"user_id": uid})
             if doc_any:
                 if chat_id is not None:
                     _JOIN_REQ_RAM_CACHE.add((int(chat_id), uid))
@@ -572,10 +675,11 @@ async def has_join_request(user_id: int, chat_id: Optional[int] = None) -> bool:
 
 
 async def get_total_join_requests() -> int:
-    total = 0
+    total = len(_JOIN_REQ_RAM_CACHE)
     if _fsub_reqs_db is not None:
         try:
-            total = await _fsub_reqs_db.count_documents({})
+            db_total = await _fsub_reqs_db.count_documents({})
+            total = max(total, int(db_total or 0))
         except Exception:
             pass
     try:
@@ -591,8 +695,11 @@ async def get_total_join_requests() -> int:
 
 
 async def clear_all_join_requests() -> int:
+    global _FSUB_DB_QUOTA_FULL_UNTIL
+    ram_cnt = len(_JOIN_REQ_RAM_CACHE)
     _JOIN_REQ_RAM_CACHE.clear()
     _VERIFIED_MEMBER_CACHE.clear()
+    _FSUB_DB_QUOTA_FULL_UNTIL = 0.0
     deleted = 0
     if _fsub_reqs_db is not None:
         try:
@@ -608,7 +715,7 @@ async def clear_all_join_requests() -> int:
                 await _join_reqs_db.delete_all_users()
     except Exception:
         pass
-    return deleted
+    return max(deleted, ram_cnt)
 
 
 # ============================================================
@@ -849,7 +956,7 @@ async def check_user_in_channel(
         return True
 
     if is_req and cache_key in _JOIN_REQ_RAM_CACHE:
-        _VERIFIED_MEMBER_CACHE[cache_key] = now + 1800
+        _VERIFIED_MEMBER_CACHE[cache_key] = now + 3600
         return True
 
     try:
@@ -875,7 +982,7 @@ async def check_user_in_channel(
 
     if is_req:
         if await has_join_request(uid, cid):
-            _VERIFIED_MEMBER_CACHE[cache_key] = now + 1800
+            _VERIFIED_MEMBER_CACHE[cache_key] = now + 3600
             return True
     return False
 
@@ -1900,8 +2007,8 @@ async def join_reqs_handler(bot: Client, join_req: ChatJoinRequest):
             username=user.username or "None",
             date=join_req.date,
         )
-    except Exception as e:
-        logger.error(f"Failed to log join request for {user.id}: {e}")
+    except Exception:
+        pass
 
 
 # ============================================================
