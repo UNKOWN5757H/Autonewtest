@@ -58,8 +58,13 @@ from info import API_HASH, API_ID, BOT_TOKEN, LOG_STR, PORT, SESSION
 from utils import temp
 
 try:
-    from database.ia_filterdb import get_all_healthy_read_dbs, mark_db_error
+    from database.ia_filterdb import (
+        get_all_configured_dbs,
+        get_all_healthy_read_dbs,
+        mark_db_error,
+    )
 except ImportError:
+    get_all_configured_dbs = None
     get_all_healthy_read_dbs = None
     mark_db_error = None
 
@@ -133,9 +138,36 @@ async def is_user_admin(client: Client, message: Message) -> bool:
     return False
 
 
+async def _boot_datadb_urls():
+    """Loads all saved /datadb MongoDB URLs on boot so dynamic databases are connected immediately."""
+    try:
+        from plugins.datadb import load_datadb_config
+
+        cfg = await load_datadb_config(force_refresh=True)
+        urls_cnt = len(cfg.get("urls", []))
+        if urls_cnt > 0:
+            logger.info(
+                f"🗄️ Multi-DB Auto-Boot: Loaded {urls_cnt} extra MongoDB URL(s) from /datadb (Enabled={cfg.get('enabled', True)})!"
+            )
+    except Exception as e:
+        logger.error(f"Multi-DB auto-boot warning: {e}")
+
+
 async def _find_config_doc_across_dbs(col_name: str, query_doc: dict) -> Optional[dict]:
-    """Reads config documents across all healthy DBs (DB 1, DB 2, DB 3) so settings are never lost."""
-    if callable(get_all_healthy_read_dbs):
+    """Reads config documents across Primary DB + all /datadb URLs so settings are never lost."""
+    if callable(get_all_configured_dbs):
+        for idx, target_db, _ in get_all_configured_dbs(include_when_disabled=True):
+            if target_db is None:
+                continue
+            try:
+                doc = await target_db[col_name].find_one(query_doc)
+                if doc:
+                    return doc
+            except Exception as e:
+                if callable(mark_db_error):
+                    mark_db_error(idx, e)
+                continue
+    elif callable(get_all_healthy_read_dbs):
         for idx, target_db in get_all_healthy_read_dbs():
             try:
                 doc = await target_db[col_name].find_one(query_doc)
@@ -159,8 +191,11 @@ async def _find_config_doc_across_dbs(col_name: str, query_doc: dict) -> Optiona
 
 
 async def _restore_persistent_settings():
-    """Restores saved custom captions, UI settings, timers, and global images into `info` on bot startup."""
+    """Restores saved /datadb URLs, custom captions, UI settings, timers, and global images on bot startup."""
     try:
+        # 0. Load & register all dynamic /datadb MongoDB URLs first!
+        await _boot_datadb_urls()
+
         # 1. Restore custom_captions collection
         cap_doc = await _find_config_doc_across_dbs(
             "custom_captions", {"_id": "settings"}
@@ -235,6 +270,7 @@ async def _restore_persistent_settings():
 async def _boot_multibot_workers():
     """Loads saved Multi-Bot workers across all DBs and starts them in the background on boot."""
     try:
+        await _boot_datadb_urls()
         from plugins.multibot import ensure_all_workers_started, load_multibot_config
 
         cfg = await load_multibot_config(force_refresh=True)
@@ -258,7 +294,7 @@ class Bot(Client):
             api_id=API_ID,
             api_hash=API_HASH,
             bot_token=BOT_TOKEN,
-            workers=500,
+            workers=int(getattr(info, "WORKERS", 500) or 500),
             plugins={"root": "plugins"},
             sleep_threshold=10,
             in_memory=True,
