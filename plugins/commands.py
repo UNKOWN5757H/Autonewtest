@@ -10,6 +10,7 @@ from pyrogram.errors import (
     ChatWriteForbidden,
     FloodWait,
     Forbidden,
+    MediaEmpty,
     MessageIdInvalid,
     MessageNotModified,
     PeerIdInvalid,
@@ -36,6 +37,12 @@ from database.ia_filterdb import get_file_details
 from database.users_chats_db import db as _db
 from info import AUTH_CHANNEL, CUSTOM_FILE_CAPTION, REQ_CHANNEL
 from utils import get_size, is_subscribed, temp
+
+try:
+    from database.ia_filterdb import encode_file_id, update_cached_file_id
+except ImportError:
+    encode_file_id = None
+    update_cached_file_id = None
 
 try:
     from plugins.uibuttons import (
@@ -311,6 +318,258 @@ def schedule_pm_auto_delete(
 
 
 # ============================================================
+# 🔧 SELF-HEALING MEDIA SENDER (FIXES [400 MEDIA_EMPTY] PERMANENTLY)
+# ============================================================
+async def _try_send_with_client(
+    bot_client: Client,
+    chat_id: int,
+    fid: str,
+    file_type: Optional[str],
+    caption: str,
+    reply_markup: Any,
+    protect: bool,
+) -> Optional[Message]:
+    """Tries sending a file_id using send_cached_media and type-specific fallbacks."""
+    if not fid:
+        return None
+    try:
+        return await bot_client.send_cached_media(
+            chat_id=chat_id,
+            file_id=fid,
+            caption=caption,
+            reply_markup=reply_markup,
+            protect_content=protect,
+            parse_mode=enums.ParseMode.HTML,
+        )
+    except FloodWait as e:
+        await asyncio.sleep(e.value + 1)
+        try:
+            return await bot_client.send_cached_media(
+                chat_id=chat_id,
+                file_id=fid,
+                caption=caption,
+                reply_markup=reply_markup,
+                protect_content=protect,
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception:
+            pass
+    except (UserIsBlocked, PeerIdInvalid):
+        raise
+    except Exception:
+        pass
+
+    # Fallback to explicit send_video / send_document / send_audio
+    ft = str(file_type or "").lower()
+    methods = []
+    if "video" in ft:
+        methods = [
+            (bot_client.send_video, "video"),
+            (bot_client.send_document, "document"),
+        ]
+    elif "audio" in ft:
+        methods = [
+            (bot_client.send_audio, "audio"),
+            (bot_client.send_document, "document"),
+        ]
+    else:
+        methods = [
+            (bot_client.send_document, "document"),
+            (bot_client.send_video, "video"),
+            (bot_client.send_audio, "audio"),
+        ]
+
+    for fn, param_name in methods:
+        try:
+            return await fn(
+                **{
+                    "chat_id": chat_id,
+                    param_name: fid,
+                    "caption": caption,
+                    "reply_markup": reply_markup,
+                    "protect_content": protect,
+                    "parse_mode": enums.ParseMode.HTML,
+                }
+            )
+        except (UserIsBlocked, PeerIdInvalid):
+            raise
+        except Exception:
+            continue
+    return None
+
+
+async def _recover_and_send_media(
+    main_bot: Client,
+    user_id: int,
+    short_id: str,
+    file_obj: Any,
+    final_caption: str,
+    final_keyboard: Any,
+    protect: bool,
+) -> Optional[Message]:
+    """
+    4-Layer Self-Healing Media Delivery:
+    Layer 1: Reconstruct & send using Main Bot's `full_file_id` (and without stale `file_ref`).
+    Layer 2: If `chat_id` & `msg_id` are stored, fetch the fresh message from the source channel via Main Bot.
+    Layer 3: If the file was indexed by a Worker Bot in `/bots` (which owns the `file_id`),
+             have the Worker Bot relay the file to `LOG_CHANNEL` (or `CHANNELS[0]`), grab the
+             Main Bot's new `file_id`, self-heal MongoDB, and send it to the user!
+    """
+    db_file_id = (
+        file_obj.get("full_file_id", file_obj.get("file_id", short_id))
+        if isinstance(file_obj, dict)
+        else getattr(
+            file_obj, "full_file_id", getattr(file_obj, "file_id", short_id)
+        )
+    )
+    file_type = (
+        file_obj.get("file_type")
+        if isinstance(file_obj, dict)
+        else getattr(file_obj, "file_type", None)
+    )
+    src_chat_id = (
+        file_obj.get("chat_id")
+        if isinstance(file_obj, dict)
+        else getattr(file_obj, "chat_id", None)
+    )
+    src_msg_id = (
+        file_obj.get("msg_id")
+        if isinstance(file_obj, dict)
+        else getattr(file_obj, "msg_id", None)
+    )
+
+    # Candidate file_ids to try on Main Bot (with file_ref, and without file_ref in case file_ref expired)
+    candidate_fids = [db_file_id]
+    if callable(encode_file_id):
+        no_ref_fid = encode_file_id(str(short_id), "")
+        if no_ref_fid and no_ref_fid not in candidate_fids:
+            candidate_fids.append(no_ref_fid)
+
+    # LAYER 1: Direct send via Main Bot
+    for cand_fid in candidate_fids:
+        sent = await _try_send_with_client(
+            main_bot,
+            user_id,
+            cand_fid,
+            file_type,
+            final_caption,
+            final_keyboard,
+            protect,
+        )
+        if sent:
+            return sent
+
+    # LAYER 2: Fetch fresh message from source channel if chat_id & msg_id are saved
+    if src_chat_id and src_msg_id:
+        try:
+            ch_msg = await main_bot.get_messages(int(src_chat_id), int(src_msg_id))
+            if ch_msg and ch_msg.media:
+                media_sub = getattr(ch_msg, ch_msg.media.value, None)
+                fresh_fid = getattr(media_sub, "file_id", None)
+                if fresh_fid:
+                    if callable(update_cached_file_id):
+                        asyncio.create_task(
+                            update_cached_file_id(
+                                short_id, fresh_fid, int(src_chat_id), int(src_msg_id)
+                            )
+                        )
+                    sent = await _try_send_with_client(
+                        main_bot,
+                        user_id,
+                        fresh_fid,
+                        ch_msg.media.value,
+                        final_caption,
+                        final_keyboard,
+                        protect,
+                    )
+                    if sent:
+                        return sent
+        except Exception:
+            pass
+
+    # LAYER 3: Worker Bot Relay (When a Worker Bot indexed the file and owns the file_id)
+    try:
+        from plugins.multibot import ensure_all_workers_started
+
+        workers = await ensure_all_workers_started()
+    except Exception:
+        workers = []
+
+    if workers:
+        relay_channels = []
+        for ch_candidate in (
+            getattr(info, "LOG_CHANNEL", None),
+            getattr(info, "INDEX_REQ_CHANNEL", None),
+            *(getattr(info, "FILE_STORE_CHANNEL", []) or []),
+            *(getattr(info, "CHANNELS", []) or []),
+        ):
+            if ch_candidate and int(ch_candidate) not in relay_channels:
+                relay_channels.append(int(ch_candidate))
+
+        for w_client in workers:
+            for relay_chat in relay_channels:
+                for cand_fid in candidate_fids:
+                    relayed_msg = None
+                    try:
+                        relayed_msg = await _try_send_with_client(
+                            w_client,
+                            relay_chat,
+                            cand_fid,
+                            file_type,
+                            caption="🔄",
+                            reply_markup=None,
+                            protect=False,
+                        )
+                    except Exception:
+                        relayed_msg = None
+
+                    if relayed_msg and relayed_msg.id:
+                        try:
+                            main_view = await main_bot.get_messages(
+                                relay_chat, relayed_msg.id
+                            )
+                            try:
+                                await w_client.delete_messages(
+                                    relay_chat, relayed_msg.id
+                                )
+                            except Exception:
+                                pass
+
+                            if main_view and main_view.media:
+                                m_obj = getattr(
+                                    main_view, main_view.media.value, None
+                                )
+                                new_main_fid = getattr(m_obj, "file_id", None)
+                                if new_main_fid:
+                                    if callable(update_cached_file_id):
+                                        asyncio.create_task(
+                                            update_cached_file_id(
+                                                short_id, new_main_fid
+                                            )
+                                        )
+                                    sent = await _try_send_with_client(
+                                        main_bot,
+                                        user_id,
+                                        new_main_fid,
+                                        main_view.media.value,
+                                        final_caption,
+                                        final_keyboard,
+                                        protect,
+                                    )
+                                    if sent:
+                                        return sent
+                        except Exception:
+                            try:
+                                await w_client.delete_messages(
+                                    relay_chat, relayed_msg.id
+                                )
+                            except Exception:
+                                pass
+
+    return None
+
+
+# ============================================================
 # 📦 SHARED FILE SENDER LOGIC & FILE CALLBACK HANDLER
 # ============================================================
 async def send_requested_file(
@@ -351,11 +610,6 @@ async def send_requested_file(
         if isinstance(files, dict)
         else getattr(files, "caption", "")
     )
-    db_file_id = (
-        files.get("full_file_id", files.get("file_id", file_id))
-        if isinstance(files, dict)
-        else getattr(files, "full_file_id", getattr(files, "file_id", file_id))
-    )
 
     custom_cap = getattr(info, "CUSTOM_FILE_CAPTION", CUSTOM_FILE_CAPTION)
     if custom_cap:
@@ -368,8 +622,10 @@ async def send_requested_file(
         except Exception:
             pass
 
-    if not f_caption:
+    if not f_caption or not f_caption.strip():
         f_caption = f"<b>{title}</b>"
+    elif f"{title}" not in f_caption and "{file_name}" not in str(custom_cap or ""):
+        f_caption = f"<b>{title}</b>\n\n{f_caption}"
     elif not f_caption.strip().startswith("<b>"):
         f_caption = f"<b>{f_caption}</b>"
 
@@ -380,7 +636,6 @@ async def send_requested_file(
     final_caption, final_keyboard = safe_parse_text_and_markup(f_caption, default_btn)
     protect = True if ident in ["filep", "checksubp"] else False
 
-    # Send optional Info Message / Info Image before delivering the file if configured
     info_msg_txt = getattr(info, "INFO_MSG", None)
     info_img_val = getattr(info, "INFO_IMG", None)
     pre_info_msg = None
@@ -405,23 +660,14 @@ async def send_requested_file(
 
     msg = None
     try:
-        msg = await client.send_cached_media(
-            chat_id=user_id,
-            file_id=db_file_id,
-            caption=final_caption,
-            reply_markup=final_keyboard,
-            protect_content=protect,
-            parse_mode=enums.ParseMode.HTML,
-        )
-    except FloodWait as e:
-        await asyncio.sleep(e.value + 1)
-        msg = await client.send_cached_media(
-            chat_id=user_id,
-            file_id=db_file_id,
-            caption=final_caption,
-            reply_markup=final_keyboard,
-            protect_content=protect,
-            parse_mode=enums.ParseMode.HTML,
+        msg = await _recover_and_send_media(
+            main_bot=client,
+            user_id=user_id,
+            short_id=file_id,
+            file_obj=files,
+            final_caption=final_caption,
+            final_keyboard=final_keyboard,
+            protect=protect,
         )
     except (UserIsBlocked, PeerIdInvalid):
         if query and getattr(temp, "U_NAME", None):
@@ -429,32 +675,27 @@ async def send_requested_file(
                 query, url=f"https://t.me/{temp.U_NAME}?start={ident}_{file_id}"
             )
         return
-    except Exception:
-        try:
-            msg = await client.send_document(
-                chat_id=user_id,
-                document=db_file_id,
-                caption=final_caption,
-                reply_markup=final_keyboard,
-                protect_content=protect,
+    except Exception as err:
+        logger.error(f"send_requested_file error: {err}")
+
+    if not msg:
+        err_note = (
+            "⚠️ <b>Could not deliver this file (Invalid/Expired Media ID).</b>\n\n"
+            "💡 <i>If you indexed this channel using Worker Bots, make sure your Worker Bots are also Admins in your LOG_CHANNEL or re-index with the updated indexer!</i>"
+        )
+        if query:
+            return await safe_answer(
+                query,
+                "⚠️ Could not deliver file (Invalid/Expired Media ID).",
+                show_alert=True,
+            )
+        if reply_target:
+            return await safe_reply_text(
+                reply_target,
+                err_note,
                 parse_mode=enums.ParseMode.HTML,
             )
-        except (UserIsBlocked, PeerIdInvalid):
-            if query and getattr(temp, "U_NAME", None):
-                return await safe_answer(
-                    query, url=f"https://t.me/{temp.U_NAME}?start={ident}_{file_id}"
-                )
-            return
-        except Exception as err:
-            if query:
-                return await safe_answer(query, f"⚠️ Error: {err}", show_alert=True)
-            if reply_target:
-                return await safe_reply_text(
-                    reply_target,
-                    f"⚠️ <b>Error:</b>\n<code>{err}</code>",
-                    parse_mode=enums.ParseMode.HTML,
-                )
-            return
+        return
 
     if query:
         await safe_answer(query, "📥 File sent to your PM!")
@@ -689,7 +930,7 @@ async def rem_clean_words(client: Client, message: Message):
         text, markup = await build_cleanwords_panel_ui()
         await safe_reply_text(
             message,
-            f"🗑️ <b>All Custom Clean Words Removed!</b>\n<i>(Note: @words and symbols are still always stripped automatically)</i>\n\n{text}",
+            f"🗑️ <b>All Custom Clean Words Removed!</b>\n<i>(Note: Stylish fonts, @words and symbols are still always stripped automatically)</i>\n\n{text}",
             reply_markup=markup,
             parse_mode=enums.ParseMode.HTML,
         )
@@ -968,7 +1209,7 @@ async def pm_auto_reply(client: Client, message: Message):
     pm_img = settings.get("image", getattr(info, "NOT_FOUND_IMG", None))
     btn_text = settings.get("button_text", "💬 Message Here Only")
     btn_url = settings.get("button_url", "https://t.me/Sandalwood_Kannada_Group")
-    btn_color_str = str(settings.get("button_color", "green")).lower()
+    btn_color_str = str(settings.get("button_color", "red")).lower()
 
     default_markup = get_pm_autoreply_keyboard(btn_text, btn_url, btn_color_str)
 
