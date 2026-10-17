@@ -1,10 +1,12 @@
 import asyncio
 import base64
+import hashlib
 import logging
 import re
 import time
 from struct import pack, unpack
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import BulkWriteError, DuplicateKeyError, OperationFailure
@@ -24,7 +26,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)
 
 # ============================================================
-# 🗄️ 3-DATABASE FAULT-TOLERANT SETUP (NO TIMEOUTS ON LARGE OPS)
+# 🗄️ DYNAMIC UNLIMITED MULTI-DATABASE ENGINE (PRIMARY + /datadb)
 # ============================================================
 _MONGO_KWARGS = {
     "serverSelectionTimeoutMS": 6000,
@@ -33,47 +35,174 @@ _MONGO_KWARGS = {
     "retryWrites": True,
 }
 
-SECOND_DATABASE_URI = (getattr(info, "SECOND_DATABASE_URI", "") or "").strip()
-THIRD_DATABASE_URI = (getattr(info, "THIRD_DATABASE_URI", "") or "").strip()
-
-SECOND_DATABASE_NAME = (
-    getattr(info, "SECOND_DATABASE_NAME", DATABASE_NAME) or DATABASE_NAME
-)
-THIRD_DATABASE_NAME = (
-    getattr(info, "THIRD_DATABASE_NAME", DATABASE_NAME) or DATABASE_NAME
-)
-
+# Primary Database (DB 1) from info.DATABASE_URI
 db = AsyncIOMotorClient(DATABASE_URI, **_MONGO_KWARGS)[DATABASE_NAME]
 instance = MotorAsyncIOInstance(db)
 
-db2 = (
-    AsyncIOMotorClient(SECOND_DATABASE_URI, **_MONGO_KWARGS)[SECOND_DATABASE_NAME]
-    if SECOND_DATABASE_URI and SECOND_DATABASE_URI != DATABASE_URI
-    else None
-)
+# Legacy aliases set to None (db2 and db3 removed; all extra DBs are managed via /datadb)
+db2 = None
+db3 = None
 
-db3 = (
-    AsyncIOMotorClient(THIRD_DATABASE_URI, **_MONGO_KWARGS)[THIRD_DATABASE_NAME]
-    if THIRD_DATABASE_URI
-    and THIRD_DATABASE_URI not in [DATABASE_URI, SECOND_DATABASE_URI]
-    else None
-)
+# Unlimited dynamic databases added via /datadb command
+MULTI_DB_ENABLED: bool = True
+DYNAMIC_DB_CLIENTS: Dict[str, Any] = {}  # db_id -> AsyncIOMotorDatabase
+DYNAMIC_DB_META: List[Dict[str, Any]] = []  # [{"id": str, "name": str, "uri": str, "db_name": str}]
 
 # Circuit-breaker trackers so a broken/full DB never freezes the bot or spams logs
 _DEAD_READ_DBS: Dict[int, float] = {}  # db_idx -> cooldown_until_ts
 _QUOTA_FULL_DBS: Dict[int, float] = {}  # db_idx -> cooldown_until_ts
 
-ACTIVE_DB_INDEX = 1  # 1=db, 2=db2, 3=db3
+ACTIVE_DB_INDEX = 1  # 1 = Primary DB, 2+ = Dynamic /datadb URLs
 KNOWN_TITLES = set()
+
+
+def extract_db_label_from_uri(uri: str, fallback_idx: int = 1) -> Tuple[str, str]:
+    """Extracts a clean display name (e.g. user@cluster0) and database name from a MongoDB URI."""
+    uri_clean = uri.strip()
+    db_name = DATABASE_NAME
+    try:
+        parsed = urlparse(uri_clean)
+        if parsed.path and len(parsed.path.strip("/")) > 0:
+            path_db = parsed.path.strip("/").split("/")[0].split("?")[0].strip()
+            if path_db:
+                db_name = path_db
+        host = parsed.hostname or ""
+        if host:
+            short_host = host.split(".")[0]
+            user = parsed.username or ""
+            label = f"{user}@{short_host}" if user else short_host
+            return label[:28], db_name
+    except Exception:
+        pass
+    return f"DB URL #{fallback_idx}", db_name
+
+
+def make_db_id(uri: str) -> str:
+    return hashlib.md5(uri.strip().encode("utf-8")).hexdigest()[:10]
+
+
+def register_dynamic_db_entry(
+    uri: str, custom_name: Optional[str] = None, db_name: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Registers or updates a dynamic MongoDB URI in the live runtime pool."""
+    uri_str = str(uri or "").strip()
+    if not uri_str.startswith(("mongodb://", "mongodb+srv://")):
+        return None
+
+    if uri_str == DATABASE_URI:
+        return None
+
+    db_id = make_db_id(uri_str)
+    auto_label, parsed_db_name = extract_db_label_from_uri(
+        uri_str, len(DYNAMIC_DB_META) + 1
+    )
+    final_name = (custom_name or auto_label).strip()
+    final_db_name = (db_name or parsed_db_name or DATABASE_NAME).strip()
+
+    if db_id not in DYNAMIC_DB_CLIENTS:
+        try:
+            client = AsyncIOMotorClient(uri_str, **_MONGO_KWARGS)
+            DYNAMIC_DB_CLIENTS[db_id] = client[final_db_name]
+        except Exception as e:
+            logger.error(f"Failed to init dynamic DB {final_name}: {e}")
+            return None
+
+    entry = {
+        "id": db_id,
+        "name": final_name,
+        "uri": uri_str,
+        "db_name": final_db_name,
+    }
+    existing_ids = {x["id"] for x in DYNAMIC_DB_META}
+    if db_id not in existing_ids:
+        DYNAMIC_DB_META.append(entry)
+    else:
+        for idx, item in enumerate(DYNAMIC_DB_META):
+            if item["id"] == db_id:
+                DYNAMIC_DB_META[idx] = entry
+                break
+    return entry
+
+
+def unregister_dynamic_db_entry(db_id: str) -> bool:
+    global ACTIVE_DB_INDEX
+    removed = False
+    DYNAMIC_DB_CLIENTS.pop(db_id, None)
+    new_meta = []
+    for item in DYNAMIC_DB_META:
+        if item.get("id") == db_id:
+            removed = True
+        else:
+            new_meta.append(item)
+    DYNAMIC_DB_META.clear()
+    DYNAMIC_DB_META.extend(new_meta)
+    ACTIVE_DB_INDEX = 1
+    _DEAD_READ_DBS.clear()
+    _QUOTA_FULL_DBS.clear()
+    search_cache.clear()
+    return removed
+
+
+def clear_all_dynamic_db_entries() -> int:
+    global ACTIVE_DB_INDEX
+    cnt = len(DYNAMIC_DB_META)
+    DYNAMIC_DB_CLIENTS.clear()
+    DYNAMIC_DB_META.clear()
+    ACTIVE_DB_INDEX = 1
+    _DEAD_READ_DBS.clear()
+    _QUOTA_FULL_DBS.clear()
+    search_cache.clear()
+    return cnt
+
+
+def set_multi_db_enabled(enabled: bool):
+    global MULTI_DB_ENABLED, ACTIVE_DB_INDEX
+    MULTI_DB_ENABLED = bool(enabled)
+    ACTIVE_DB_INDEX = 1
+    search_cache.clear()
+
+
+def is_multi_db_enabled() -> bool:
+    return bool(MULTI_DB_ENABLED)
+
+
+def get_all_configured_dbs(
+    include_when_disabled: bool = False,
+) -> List[Tuple[int, Any, str]]:
+    """
+    Returns [(index, db_handle, label), ...] for all configured databases:
+    - Index 1: Primary DATABASE_URI
+    - Index 2+: Unlimited dynamic URLs added via /datadb
+    When MULTI_DB_ENABLED is False (and include_when_disabled is False), returns only DB 1.
+    """
+    out: List[Tuple[int, Any, str]] = [(1, db, "Primary DB")]
+    if not MULTI_DB_ENABLED and not include_when_disabled:
+        return out
+
+    seen_uris = {DATABASE_URI}
+    next_idx = 2
+    for item in DYNAMIC_DB_META:
+        u = item.get("uri", "")
+        db_id = item.get("id", "")
+        if not u or u in seen_uris:
+            continue
+        target_handle = DYNAMIC_DB_CLIENTS.get(db_id)
+        if target_handle is not None:
+            out.append((next_idx, target_handle, item.get("name", f"DB {next_idx}")))
+            seen_uris.add(u)
+            next_idx += 1
+
+    return out
 
 
 def get_writable_System_db():
     """
-    Returns the first healthy, non-full database handle for plugins (fsub, multibot, etc.)
+    Returns the first healthy, non-full database handle for plugins (fsub, multibot, datadb, etc.)
     when the primary 512MB cluster is full!
     """
     now = time.time()
-    for idx, target in ((1, db), (2, db2), (3, db3)):
+    all_dbs = get_all_configured_dbs(include_when_disabled=True)
+    for idx, target, _ in all_dbs:
         if target is None:
             continue
         if now < _DEAD_READ_DBS.get(idx, 0.0):
@@ -81,7 +210,7 @@ def get_writable_System_db():
         if now < _QUOTA_FULL_DBS.get(idx, 0.0):
             continue
         return target
-    for idx, target in ((2, db2), (3, db3), (1, db)):
+    for idx, target, _ in reversed(all_dbs):
         if target is not None and now >= _DEAD_READ_DBS.get(idx, 0.0):
             return target
     return db
@@ -90,7 +219,7 @@ def get_writable_System_db():
 def get_all_healthy_read_dbs() -> List[Tuple[int, Any]]:
     now = time.time()
     healthy = []
-    for idx, target in ((1, db), (2, db2), (3, db3)):
+    for idx, target, _ in get_all_configured_dbs(include_when_disabled=False):
         if target is None:
             continue
         if now < _DEAD_READ_DBS.get(idx, 0.0):
@@ -235,23 +364,20 @@ class SafeMediaWrapper:
 
 
 # ============================================================
-# 🔥 INSTANT 3-DATABASE WIPE & LIVE 3-DATABASE STATS ENGINE
+# 🔥 INSTANT ALL-DATABASE WIPE & LIVE MULTI-DATABASE STATS ENGINE
 # ============================================================
 async def nuke_all_media_dbs() -> Dict[str, Any]:
     """
-    Instantly wipes all movie/media files from DB 1, DB 2, and DB 3 using `.drop()`
-    so it NEVER hits `pymongo.errors.NetworkTimeout` even with 10 lakh+ files!
+    Instantly wipes all movie/media files across Primary DB + all /datadb URLs
+    using `.drop()` so it NEVER hits `pymongo.errors.NetworkTimeout`!
     """
     global ACTIVE_DB_INDEX
-    summary = {
-        "db1_deleted": 0,
-        "db2_deleted": 0,
-        "db3_deleted": 0,
+    summary: Dict[str, Any] = {
         "total_deleted": 0,
         "dbs_cleared": [],
     }
 
-    for idx, target_db in ((1, db), (2, db2), (3, db3)):
+    for idx, target_db, label in get_all_configured_dbs(include_when_disabled=True):
         if target_db is None:
             continue
 
@@ -266,7 +392,6 @@ async def nuke_all_media_dbs() -> Dict[str, Any]:
 
         wiped = False
         try:
-            # `.drop()` executes in <50ms regardless of collection size and frees 100% of disk space!
             await col.drop()
             wiped = True
         except Exception:
@@ -275,14 +400,13 @@ async def nuke_all_media_dbs() -> Dict[str, Any]:
                 count = max(count, getattr(res, "deleted_count", 0))
                 wiped = True
             except Exception as e:
-                logger.error(f"Failed to wipe DB {idx}: {e}")
+                logger.error(f"Failed to wipe DB {idx} ({label}): {e}")
 
         if wiped:
             summary[f"db{idx}_deleted"] = count
             summary["total_deleted"] += count
-            summary["dbs_cleared"].append(f"DB {idx} ({count:,} files)")
+            summary["dbs_cleared"].append(f"{label} ({count:,} files)")
 
-        # Also clean up any genlink / checkpoint temp collections on this DB
         for extra_col in (
             "genlink_files",
             "genlink_batches",
@@ -313,11 +437,14 @@ async def nuke_all_media_dbs() -> Dict[str, Any]:
     return summary
 
 
-async def _fetch_single_db_stats(idx: int, target_db: Any) -> Dict[str, Any]:
+async def _fetch_single_db_stats(
+    idx: int, target_db: Any, label: str = ""
+) -> Dict[str, Any]:
     quota_limit = 536870912  # 512 MB in bytes
     if target_db is None:
         return {
             "index": idx,
+            "label": label or f"DB {idx}",
             "configured": False,
             "status": "⚪ Not Configured",
             "files": 0,
@@ -362,6 +489,7 @@ async def _fetch_single_db_stats(idx: int, target_db: Any) -> Dict[str, Any]:
 
         return {
             "index": idx,
+            "label": label or f"DB {idx}",
             "configured": True,
             "status": status,
             "files": int(files_cnt or 0),
@@ -372,6 +500,7 @@ async def _fetch_single_db_stats(idx: int, target_db: Any) -> Dict[str, Any]:
         mark_db_error(idx, e)
         return {
             "index": idx,
+            "label": label or f"DB {idx}",
             "configured": True,
             "status": "🔴 Error / Unreachable",
             "files": 0,
@@ -382,17 +511,21 @@ async def _fetch_single_db_stats(idx: int, target_db: Any) -> Dict[str, Any]:
 
 async def get_all_dbs_stats() -> Dict[str, Any]:
     """
-    Queries DB 1, DB 2, and DB 3 in parallel and returns individual + combined
-    file counts, used storage, and free storage.
+    Queries Primary DB + all unlimited /datadb URLs in parallel and returns
+    individual + combined file counts, used storage, and free storage.
     """
-    r1, r2, r3 = await asyncio.gather(
-        _fetch_single_db_stats(1, db),
-        _fetch_single_db_stats(2, db2),
-        _fetch_single_db_stats(3, db3),
-    )
-    dbs_list = [r1, r2, r3]
-    configured_dbs = [d for d in dbs_list if d["configured"]]
+    all_configured = get_all_configured_dbs(include_when_disabled=True)
+    tasks = [
+        _fetch_single_db_stats(idx, handle, lbl) for idx, handle, lbl in all_configured
+    ]
+    results = list(await asyncio.gather(*tasks)) if tasks else []
 
+    by_idx = {r["index"]: r for r in results}
+    r1 = by_idx.get(1) or await _fetch_single_db_stats(1, db, "Primary DB")
+    r2 = by_idx.get(2) or await _fetch_single_db_stats(2, None, "DB 2")
+    r3 = by_idx.get(3) or await _fetch_single_db_stats(3, None, "DB 3")
+
+    configured_dbs = [d for d in results if d["configured"]]
     total_files = sum(d["files"] for d in configured_dbs)
     total_used_bytes = sum(d["used_bytes"] for d in configured_dbs)
     total_free_bytes = sum(d["free_bytes"] for d in configured_dbs)
@@ -402,6 +535,8 @@ async def get_all_dbs_stats() -> Dict[str, Any]:
         "db1": r1,
         "db2": r2,
         "db3": r3,
+        "all_dbs": results,
+        "multi_db_enabled": MULTI_DB_ENABLED,
         "configured_count": len(configured_dbs),
         "active_db_index": ACTIVE_DB_INDEX,
         "total_files": total_files,
@@ -413,7 +548,7 @@ async def get_all_dbs_stats() -> Dict[str, Any]:
 
 async def free_up_mongodb_storage() -> Dict[str, Any]:
     """
-    Extreme 512MB MongoDB Quota Optimizer:
+    Extreme 512MB MongoDB Quota Optimizer across ALL configured databases:
     1. Drops heavy text indexes.
     2. Deletes temporary cache collections.
     3. Unsets unused keys to shrink DB by ~60%.
@@ -425,7 +560,7 @@ async def free_up_mongodb_storage() -> Dict[str, Any]:
         "compacted_files": 0,
     }
 
-    for idx, target_db in ((1, db), (2, db2), (3, db3)):
+    for idx, target_db, _ in get_all_configured_dbs(include_when_disabled=True):
         if target_db is None or time.time() < _DEAD_READ_DBS.get(idx, 0.0):
             continue
 
@@ -487,8 +622,8 @@ async def get_search_results(
     filter=False,
     is_autocorrect=False,
 ):
-    """Searches seamlessly across all healthy databases (DB 1, DB 2, and DB 3)."""
-    cache_key = f"{query_text}_{file_type}_{max_results}_{offset}_{filter}"
+    """Searches seamlessly across Primary DB + all healthy /datadb URLs."""
+    cache_key = f"{query_text}_{file_type}_{max_results}_{offset}_{filter}_{int(MULTI_DB_ENABLED)}"
     if cached := search_cache.get(cache_key):
         return cached
 
@@ -640,17 +775,17 @@ def _build_compact_media_doc(media) -> Optional[dict]:
 
 
 async def save_file(media) -> Tuple[bool, int]:
-    """Saves a single file, automatically jumping to DB2 or DB3 if quota is full or auth fails."""
+    """Saves a single file, automatically jumping across Primary DB and all /datadb URLs when quota is full."""
     global ACTIVE_DB_INDEX
     doc = _build_compact_media_doc(media)
     if not doc:
         return False, 2
 
     now = time.time()
-    for i in (1, 2, 3):
+    all_dbs = get_all_configured_dbs(include_when_disabled=False)
+    for i, target_db, _ in all_dbs:
         if i < ACTIVE_DB_INDEX:
             continue
-        target_db = db if i == 1 else (db2 if i == 2 else db3)
         if target_db is None:
             continue
         if now < _DEAD_READ_DBS.get(i, 0.0) or now < _QUOTA_FULL_DBS.get(i, 0.0):
@@ -676,7 +811,7 @@ async def save_file(media) -> Tuple[bool, int]:
 
 
 async def save_batch(media_list) -> Tuple[int, int, int]:
-    """Saves a batch of media, automatically jumping to DB2 or DB3 if quota is full."""
+    """Saves a batch of media, automatically jumping across Primary DB and all /datadb URLs when quota is full."""
     global ACTIVE_DB_INDEX
     if not media_list:
         return 0, 0, 0
@@ -691,10 +826,10 @@ async def save_batch(media_list) -> Tuple[int, int, int]:
         return 0, 0, len(media_list)
 
     now = time.time()
-    for i in (1, 2, 3):
+    all_dbs = get_all_configured_dbs(include_when_disabled=False)
+    for i, target_db, _ in all_dbs:
         if i < ACTIVE_DB_INDEX:
             continue
-        target_db = db if i == 1 else (db2 if i == 2 else db3)
         if target_db is None:
             continue
         if now < _DEAD_READ_DBS.get(i, 0.0) or now < _QUOTA_FULL_DBS.get(i, 0.0):
