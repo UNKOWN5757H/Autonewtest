@@ -51,11 +51,6 @@ except ImportError:
     mark_db_error = None
 
 try:
-    from database.ia_filterdb import Media2 as _Media2
-except ImportError:
-    _Media2 = None
-
-try:
     from database.plugin_dbs import plugin_db as _plugin_db
 except ImportError:
     _plugin_db = None
@@ -88,74 +83,99 @@ logger.setLevel(ERROR)
 # Strong reference set so Python's garbage collector never cancels sleeping auto-delete tasks
 AUTO_DELETE_TASKS = set()
 
-# Track unhealthy DB collections so a broken SECONDDB_URI doesn't cause 20-second freezes
+# Track unhealthy DB collections so a broken DB doesn't cause freezes
 _DEAD_COLLECTIONS: Dict[str, float] = {}
 
 # ============================================================
-# 🔤 STYLISH UNICODE FONT STRIPPER / NORMALIZER TABLE
+# 🔤 COMPLETE STYLISH UNICODE FONT STRIPPER / NORMALIZER ENGINE
 # ============================================================
-_STYLISH_SMALL_CAPS_MAP = str.maketrans(
-    "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ"
-    "𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙"
-    "𝐚𝐛𝐜𝐝𝐞𝐟𝐠𝐡𝐢𝐣𝐤𝐥𝐦𝐧𝐨𝐩𝐪𝐫𝐬𝐭𝐮𝐯𝐰𝐱𝐲𝐳"
-    "𝐴𝐵𝐶𝐷𝐸𝐹𝐺𝐻𝐼𝐽𝐾𝐿𝑀𝑁𝑂𝑃𝑄𝑅𝑆𝑇𝑈𝑉𝑊𝑋𝑌𝑍"
-    "𝑎𝑏𝑐𝑑𝑒𝑓𝑔ℎ𝑖𝑗𝑘𝑙𝑚𝑛𝑜𝑝𝑞𝑟𝑠𝑡𝑢𝑣𝑤𝑥𝑦𝑧"
-    "𝑨𝑩𝑪𝑫𝑬𝑭𝑮𝑯𝑰𝑱𝑲𝑳𝑴𝑵𝑶𝑷𝑸𝑹𝑺𝑻𝑼𝑽𝑾𝑿𝒀𝒁"
-    "𝒂𝒃𝒄𝒅𝒆𝒇𝒈𝒉𝒊𝒋𝒌𝒍𝒎𝒏𝒐𝒑𝒒𝒓𝒔𝒕𝒖𝒗𝒘𝒙𝒚𝒛"
-    "𝖠𝖡𝖢𝖣𝖤𝖥𝖦𝖧𝖨𝖩𝖪𝖫𝖬𝖭𝖮𝖯𝖰𝖱𝖲𝖳𝖴𝖵𝖶𝖷𝖸𝖹"
-    "𝖺𝖻𝖼𝖽𝖾𝖿𝗀𝗁𝗂𝗃𝗄𝗅𝗆𝗇𝗈𝗉𝗊𝗋𝗌𝗍𝗎𝗏𝗐𝗑𝗒𝗓"
-    "𝗔𝗕𝗖𝗗𝗘𝗙𝗚𝗛𝗜𝗝𝗞𝗟𝗠𝗡𝗢𝗣𝗤𝗥𝗦𝗧𝗨𝗩𝗪𝗫𝗬𝗭"
-    "𝗮𝗯𝗰𝗱𝗲𝗳𝗴𝗵𝗶𝗷𝗸𝗹𝗺𝗻𝗼𝗽𝗾𝗿𝘀𝘁𝘂𝘃𝘄𝘅𝘆𝘇"
-    "𝘈𝘉𝘊𝘋𝘌𝘍𝘎𝘏𝘐𝘑𝘒𝘓𝘔𝘕𝘖𝘗𝘘𝘙𝘚𝘛𝘜𝘝𝘞𝘟𝘠𝘡"
-    "𝘢𝘣𝘤𝘥𝘦𝘧𝘨𝘩𝘪𝘫𝘬𝘭𝘮𝘯𝘰𝘱𝘲𝘳𝘴𝘵𝘶𝘷𝘸𝘹𝑦𝘻"
-    "𝘼𝘽𝘾𝘿𝙀𝙁𝙂𝙃𝙄𝙅𝙆𝙇𝙈𝙉𝙊𝙋𝙌𝙍𝙎𝙏𝙐𝙑𝙒𝙓𝙔𝙕"
-    "𝙖𝙗𝙘𝙙𝙚𝙛𝙜𝙝𝙞𝙟𝙠𝙡𝙢𝙣𝙤𝙥𝙦𝙧𝙨𝙩𝙪𝙫𝙬𝙭𝙮𝙯"
-    "𝙰𝙱𝙲𝙳𝙴𝙵𝙶𝙷𝙸𝙹𝙺𝙻𝙼𝙽𝙾𝙿𝚀𝚁𝚂𝚃𝚄𝚅𝚆𝚇𝚈𝚉"
-    "𝚊𝚋𝚌𝚍𝚎𝚏𝚐𝚑𝚒𝚓𝚔𝚕𝚖𝚗𝚘𝚙𝚚𝚛𝚜𝚝𝚞𝚟𝚠𝚡𝚢𝚣"
-    "𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡𝟢𝟣𝟤𝟥𝟦𝟧𝟨𝟩𝟪𝟫𝟬𝟭𝟮𝟯𝟰𝟱𝟲𝟳𝟴𝟵𝟶𝟷𝟸𝟹𝟺𝟻𝟼𝟽𝟾𝟿",
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "abcdefghijklmnopqrstuvwxyz"
-    "01234567890123456789012345678901234567890123456789",
+_STYLISH_CHAR_MAP: Dict[int, str] = {}
+
+# 1. Small Caps & Special Latin Stylized Letters
+_SMALL_CAPS_PAIRS = (
+    ("ᴀ", "a"), ("ʙ", "b"), ("ᴄ", "c"), ("ᴅ", "d"), ("ᴇ", "e"), ("ꜰ", "f"),
+    ("ɢ", "g"), ("ʜ", "h"), ("ɪ", "i"), ("ᴊ", "j"), ("ᴋ", "k"), ("ʟ", "l"),
+    ("ᴍ", "m"), ("ɴ", "n"), ("ᴏ", "o"), ("ᴘ", "p"), ("ǫ", "q"), ("ʀ", "r"),
+    ("ꜱ", "s"), ("ᴛ", "t"), ("ᴜ", "u"), ("ᴠ", "v"), ("ᴡ", "w"), ("x", "x"),
+    ("ʏ", "y"), ("ᴢ", "z"), ("ꞯ", "q"), ("w", "w"), ("ℓ", "l"), ("ℏ", "h"),
+    ("℘", "p"), ("ℑ", "I"), ("ℜ", "R"), ("ℨ", "Z"), ("ℬ", "B"), ("ℰ", "E"),
+    ("ℱ", "F"), ("ℋ", "H"), ("ℐ", "I"), ("ℒ", "L"), ("ℳ", "M"), ("ℛ", "R"),
+    ("ℯ", "e"), ("ℊ", "g"), ("ℴ", "o"), ("ℂ", "C"), ("ℍ", "H"), ("ℕ", "N"),
+    ("ℙ", "P"), ("ℚ", "Q"), ("ℝ", "R"), ("ℤ", "Z"),
 )
+for _sc_k, _sc_v in _SMALL_CAPS_PAIRS:
+    if len(_sc_k) == 1:
+        _STYLISH_CHAR_MAP[ord(_sc_k)] = _sc_v
+
+# 2. Enclosed Alphanumerics: Ⓐ-Ⓩ (0x24B6-0x24CF), ⓐ-ⓩ (0x24D0-0x24E9)
+for _i in range(26):
+    _STYLISH_CHAR_MAP[0x24B6 + _i] = chr(ord("A") + _i)
+    _STYLISH_CHAR_MAP[0x24D0 + _i] = chr(ord("a") + _i)
+    # Parenthesized/Squared/Negative Circled/Regional Indicator/Tag Letters
+    _STYLISH_CHAR_MAP[0x1F110 + _i] = chr(ord("A") + _i)  # 🄐-🄩
+    _STYLISH_CHAR_MAP[0x1F130 + _i] = chr(ord("A") + _i)  # 🄰-🅉
+    _STYLISH_CHAR_MAP[0x1F150 + _i] = chr(ord("A") + _i)  # 🅐-🅩
+    _STYLISH_CHAR_MAP[0x1F170 + _i] = chr(ord("A") + _i)  # 🅰-🆉
+    _STYLISH_CHAR_MAP[0x1F1E6 + _i] = chr(ord("A") + _i)  # 🇦-🇿
+
+# 3. Mathematical Alphanumeric Symbols (Bold, Italic, Script, Fraktur, Double-Struck, Sans, Mono)
+_MATH_ALPHA_RANGES = (
+    (0x1D400, "A", 26), (0x1D41A, "a", 26),
+    (0x1D434, "A", 26), (0x1D44E, "a", 26),
+    (0x1D468, "A", 26), (0x1D482, "a", 26),
+    (0x1D49C, "A", 26), (0x1D4B6, "a", 26),
+    (0x1D4D0, "A", 26), (0x1D4EA, "a", 26),
+    (0x1D504, "A", 26), (0x1D51E, "a", 26),
+    (0x1D538, "A", 26), (0x1D552, "a", 26),
+    (0x1D56C, "A", 26), (0x1D586, "a", 26),
+    (0x1D5A0, "A", 26), (0x1D5BA, "a", 26),
+    (0x1D5D4, "A", 26), (0x1D5EE, "a", 26),
+    (0x1D608, "A", 26), (0x1D622, "a", 26),
+    (0x1D63C, "A", 26), (0x1D656, "a", 26),
+    (0x1D670, "A", 26), (0x1D68A, "a", 26),
+)
+for _start_cp, _base_ch, _cnt in _MATH_ALPHA_RANGES:
+    for _i in range(_cnt):
+        _STYLISH_CHAR_MAP[_start_cp + _i] = chr(ord(_base_ch) + _i)
+
+# 4. Mathematical Digits (Bold, Double-Struck, Sans-Serif, Sans-Bold, Monospace)
+for _d_start in (0x1D7CE, 0x1D7D8, 0x1D7E2, 0x1D7EC, 0x1D7F6):
+    for _i in range(10):
+        _STYLISH_CHAR_MAP[_d_start + _i] = str(_i)
 
 
 def strip_stylish_fonts(text: str) -> str:
     """
-    Converts all fancy/stylish Unicode fonts (Mathematical Bold, Italic, Script,
-    Fraktur, Sans-Serif, Monospace, Fullwidth, Circled, Squared, Small-Caps)
-    into clean standard English letters and numbers.
+    Converts/removes ALL fancy/stylish Unicode fonts (Mathematical Bold, Italic, Script,
+    Fraktur, Sans-Serif, Monospace, Fullwidth, Circled, Squared, Negative Squared,
+    Regional Indicator flags, Small-Caps, and Combining Strikethrough/Underline marks)
+    into clean standard English letters and numbers while preserving Indic scripts.
     """
     if not text:
         return ""
-    text = text.translate(_STYLISH_SMALL_CAPS_MAP)
 
-    out_chars = []
+    # Step 1: Direct codepoint translation for Math, Small-Caps, Circled & Squared fonts
+    text = text.translate(_STYLISH_CHAR_MAP)
+
+    # Step 2: Strip combining diacritical overlays (e.g., strikethrough s̶t̶y̶l̶e̶, underline)
+    # while keeping Indic vowel/consonant signs (0x0900 - 0x0D7F) intact
+    out_chars: List[str] = []
     for ch in text:
         cp = ord(ch)
         if 0x0900 <= cp <= 0x0D7F:
             out_chars.append(ch)
+        elif 0x0300 <= cp <= 0x036F or 0x20D0 <= cp <= 0x20FF or 0xFE00 <= cp <= 0xFE0F:
+            # Skip combining decorative marks & variation selectors
+            continue
         elif cp > 127:
-            norm_ch = unicodedata.normalize("NFKD", ch)
-            ascii_only = "".join(c for c in norm_ch if ord(c) < 128)
+            norm_ch = unicodedata.normalize("NFKC", ch).translate(_STYLISH_CHAR_MAP)
+            norm_kd = unicodedata.normalize("NFKD", norm_ch)
+            ascii_only = "".join(c for c in norm_kd if ord(c) < 128)
             if ascii_only:
                 out_chars.append(ascii_only)
         else:
             out_chars.append(ch)
+
     return "".join(out_chars)
 
 
@@ -769,7 +789,6 @@ async def set_feature_flag(key: str, value: bool):
                 {"_id": "config"}, {"$set": {key: bool(value)}}, upsert=True
             )
         except Exception:
-            # RAM cache still updated even if MongoDB is 512MB/512MB full
             pass
 
 
@@ -832,7 +851,7 @@ async def get_active_promos() -> List[Dict[str, str]]:
 def clean_filename(name: str, clean_words: list) -> str:
     """
     Always removes & cleans:
-    - Converts/removes all stylish Unicode fonts (e.g. 𝙆𝙖𝙣𝙩𝙖𝙧𝙖 -> Kantara, 𝖬𝗈𝗏𝗂𝖾 -> Movie)
+    - Converts/removes all stylish Unicode fonts (e.g. 𝙆𝙖𝙣𝙩𝙖𝙧𝙖 -> Kantara, 𝖬𝗈𝗏𝗂𝖾 -> Movie, Ⓜⓞⓥⓘⓔ -> Movie)
     - Any word starting with '@' (e.g., @Sandalwood_Kannada, [@Channel_Name])
     - URLs & Telegram links
     - Custom clean words & default file extensions
@@ -1189,8 +1208,7 @@ async def _direct_collection_search(
     query: str, max_results: int = 10, offset: int = 0
 ) -> Tuple[list, int, int]:
     """
-    Fallback direct search on healthy Media collections if get_search_results() crashes
-    because one of the MongoDB clusters (e.g. SECOND_DATABASE_URI) has 'bad auth' or connection pool paused.
+    Fallback direct search on healthy Media collections across all /datadb clusters.
     """
     q_clean = query.strip()
     if not q_clean:
@@ -1225,29 +1243,19 @@ async def _direct_collection_search(
                 if callable(mark_db_error):
                     mark_db_error(idx, e)
                 continue
-    else:
-        now = time.time()
-        for label, media_cls in (("media1", _Media), ("media2", _Media2)):
-            if media_cls is None or now < _DEAD_COLLECTIONS.get(label, 0.0):
-                continue
-            col = getattr(media_cls, "collection", media_cls)
-            try:
-                docs = (
-                    await col.find(mongo_filter)
-                    .sort("_id", -1)
-                    .limit(max_results + offset)
-                    .to_list(length=max_results + offset)
-                )
-                if docs:
-                    results.extend(docs)
-            except Exception as e:
-                err_s = str(e).lower()
-                if (
-                    "bad auth" in err_s
-                    or "authentication failed" in err_s
-                    or "paused" in err_s
-                ):
-                    _DEAD_COLLECTIONS[label] = now + 1800
+    elif _Media is not None:
+        col = getattr(_Media, "collection", _Media)
+        try:
+            docs = (
+                await col.find(mongo_filter)
+                .sort("_id", -1)
+                .limit(max_results + offset)
+                .to_list(length=max_results + offset)
+            )
+            if docs:
+                results.extend(docs)
+        except Exception:
+            pass
 
     total = len(results)
     sliced = results[offset : offset + max_results]
@@ -1508,34 +1516,24 @@ async def get_cached_db_titles() -> List[str]:
                 if callable(mark_db_error):
                     mark_db_error(idx, e)
                 continue
-    else:
-        now = time.time()
-        for label, media_cls in (("media1", _Media), ("media2", _Media2)):
-            if media_cls is None or now < _DEAD_COLLECTIONS.get(label, 0.0):
-                continue
-            try:
-                media_col = getattr(media_cls, "collection", media_cls)
-                sample_docs = (
-                    await media_col.find({}, {"file_name": 1})
-                    .sort("_id", -1)
-                    .limit(1000)
-                    .to_list(length=1000)
-                )
-                for d in sample_docs:
-                    fn = d.get("file_name", "")
-                    if not fn:
-                        continue
-                    clean_t = _extract_clean_movie_title(fn)
-                    if clean_t and len(clean_t) >= 2:
-                        title_set.add(clean_t)
-            except Exception as e:
-                err_s = str(e).lower()
-                if (
-                    "bad auth" in err_s
-                    or "authentication failed" in err_s
-                    or "paused" in err_s
-                ):
-                    _DEAD_COLLECTIONS[label] = now + 1800
+    elif _Media is not None:
+        try:
+            media_col = getattr(_Media, "collection", _Media)
+            sample_docs = (
+                await media_col.find({}, {"file_name": 1})
+                .sort("_id", -1)
+                .limit(1000)
+                .to_list(length=1000)
+            )
+            for d in sample_docs:
+                fn = d.get("file_name", "")
+                if not fn:
+                    continue
+                clean_t = _extract_clean_movie_title(fn)
+                if clean_t and len(clean_t) >= 2:
+                    title_set.add(clean_t)
+        except Exception:
+            pass
 
     db_titles = sorted(title_set)
     FUZZY_TITLES_CACHE.set("titles", db_titles)
@@ -1624,7 +1622,7 @@ async def get_did_you_mean_suggestions(
 def _build_dym_view(
     mention: str, raw_search: str, req: int, key: str, suggestions: List[str]
 ) -> Tuple[str, InlineKeyboardMarkup]:
-    safe_typed = html.escape(raw_search.strip()) if raw_search else "Movie"
+    safe_typed = html.escape(strip_stylish_fonts(raw_search).strip() or raw_search.strip()) if raw_search else "Movie"
     dym_text = (
         f"<b>Hᴇʏ {mention} 👋🏻\n\n"
         f"🚫 Nᴏ Eхᴀᴄᴛ Mᴀᴛᴄʜ Fᴏʀ : <code>{safe_typed}</code>\n\n"
@@ -2038,7 +2036,8 @@ async def auto_filter(client: Client, msg: Message):
         if msg.chat and RESTRICTED_WRITE_CHATS.get(str(msg.chat.id)):
             return
 
-        search = re.sub(r"https?://\S+|t\.me/\S+|@\w+", "", msg.text).strip()
+        raw_msg_text = re.sub(r"https?://\S+|t\.me/\S+|@\w+", "", msg.text).strip()
+        search = strip_stylish_fonts(raw_msg_text).strip() or raw_msg_text
         if not search:
             return
 
@@ -2161,13 +2160,13 @@ async def auto_filter(client: Client, msg: Message):
         mention = msg.from_user.mention if msg.from_user else "User"
 
         safe_orig_title = html.escape(strip_stylish_fonts(search).title())
-        safe_corr_title = html.escape(search_query.title())
-        was_indic = bool(autotranslate_on and has_indic_script(search))
+        safe_corr_title = html.escape(strip_stylish_fonts(search_query).title())
+        was_indic = bool(autotranslate_on and has_indic_script(raw_msg_text))
 
         if was_indic:
             cap = (
                 f"<b>Hᴇʏ {mention} 👋🏻\n\n"
-                f"🔤 Tʀᴀɴsʟɪᴛᴇʀᴀᴛᴇᴅ : <code>{html.escape(search)}</code> ➔ <code>{safe_corr_title}</code>\n"
+                f"🔤 Tʀᴀɴsʟɪᴛᴇʀᴀᴛᴇᴅ : <code>{html.escape(raw_msg_text)}</code> ➔ <code>{safe_corr_title}</code>\n"
                 f"➤ Yᴏᴜʀ Fɪʟᴇꜱ Rᴇᴀᴅʏ Nᴏᴡ 👇</b>"
             )
         elif was_corrected:
