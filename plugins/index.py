@@ -1080,9 +1080,7 @@ async def run_distributed_indexing(
                     for lbl, prog in prog_items[:15]
                 )
                 if len(prog_items) > 15:
-                    worker_lines += (
-                        f"\n└ <i>...and {len(prog_items) - 15} more parallel workers</i>"
-                    )
+                    worker_lines += f"\n└ <i>...and {len(prog_items) - 15} more parallel workers</i>"
 
                 progress_text = (
                     f"⚡ <b>Distributed Multi-Bot Indexing Live</b>\n"
