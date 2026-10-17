@@ -6,7 +6,6 @@ from struct import pack, unpack
 from typing import Any, Dict, List, Optional, Tuple
 
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import UpdateOne
 from pymongo.errors import BulkWriteError, DuplicateKeyError, OperationFailure
 from pyrogram.file_id import FileId, FileType
 from umongo import Document, fields
@@ -19,35 +18,109 @@ try:
     from thefuzz import process
 except ImportError:
     process = None
-    logging.getLogger(__name__).warning(
-        "thefuzz missing! Run 'pip install thefuzz[speedup]'."
-    )
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.ERROR)
 
 # ============================================================
-# 🗄️ 3-DATABASE AUTO-SHARDING SETUP (1.5 GB FREE TIER)
+# 🗄️ 3-DATABASE FAULT-TOLERANT SETUP (FAST TIMEOUTS & FAILOVER)
 # ============================================================
-db = AsyncIOMotorClient(DATABASE_URI)[DATABASE_NAME]
-instance = MotorAsyncIOInstance(db)
+_MONGO_KWARGS = {
+    "serverSelectionTimeoutMS": 4000,
+    "connectTimeoutMS": 4000,
+    "socketTimeoutMS": 8000,
+    "retryWrites": True,
+}
 
 SECOND_DATABASE_URI = getattr(info, "SECOND_DATABASE_URI", "") or ""
+THIRD_DATABASE_URI = getattr(info, "THIRD_DATABASE_URI", "") or ""
+
+SECOND_DATABASE_NAME = getattr(info, "SECOND_DATABASE_NAME", DATABASE_NAME) or DATABASE_NAME
+THIRD_DATABASE_NAME = getattr(info, "THIRD_DATABASE_NAME", DATABASE_NAME) or DATABASE_NAME
+
+db = AsyncIOMotorClient(DATABASE_URI, **_MONGO_KWARGS)[DATABASE_NAME]
+instance = MotorAsyncIOInstance(db)
+
 db2 = (
-    AsyncIOMotorClient(SECOND_DATABASE_URI)[DATABASE_NAME]
+    AsyncIOMotorClient(SECOND_DATABASE_URI, **_MONGO_KWARGS)[SECOND_DATABASE_NAME]
     if SECOND_DATABASE_URI and SECOND_DATABASE_URI != DATABASE_URI
     else None
 )
 
-THIRD_DATABASE_URI = getattr(info, "THIRD_DATABASE_URI", "") or ""
 db3 = (
-    AsyncIOMotorClient(THIRD_DATABASE_URI)[DATABASE_NAME]
+    AsyncIOMotorClient(THIRD_DATABASE_URI, **_MONGO_KWARGS)[THIRD_DATABASE_NAME]
     if THIRD_DATABASE_URI
     and THIRD_DATABASE_URI not in [DATABASE_URI, SECOND_DATABASE_URI]
     else None
 )
 
+# Circuit-breaker trackers so a broken/full DB never freezes the bot or spams logs
+_DEAD_READ_DBS: Dict[int, float] = {}   # db_idx -> cooldown_until_ts (for bad auth / paused pool)
+_QUOTA_FULL_DBS: Dict[int, float] = {}  # db_idx -> cooldown_until_ts (for 512MB quota full)
+
 ACTIVE_DB_INDEX = 1  # 1=db, 2=db2, 3=db3
 KNOWN_TITLES = set()
+
+
+def get_writable_System_db():
+    """
+    Returns the first healthy, non-full database handle for plugins (fsub, multibot, etc.)
+    when the primary 512MB cluster is full!
+    """
+    now = time.time()
+    for idx, target in ((1, db), (2, db2), (3, db3)):
+        if target is None:
+            continue
+        if now < _DEAD_READ_DBS.get(idx, 0.0):
+            continue
+        if now < _QUOTA_FULL_DBS.get(idx, 0.0):
+            continue
+        return target
+    # Fallback to db2 or db3 if db1 is full
+    for idx, target in ((2, db2), (3, db3), (1, db)):
+        if target is not None and now >= _DEAD_READ_DBS.get(idx, 0.0):
+            return target
+    return db
+
+
+def get_all_healthy_read_dbs() -> List[Tuple[int, Any]]:
+    now = time.time()
+    healthy = []
+    for idx, target in ((1, db), (2, db2), (3, db3)):
+        if target is None:
+            continue
+        if now < _DEAD_READ_DBS.get(idx, 0.0):
+            continue
+        healthy.append((idx, target))
+    return healthy
+
+
+def _is_auth_or_conn_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return (
+        "bad auth" in msg
+        or "authentication failed" in msg
+        or "connection pool paused" in msg
+        or "serverselectiontimeout" in msg
+        or "timed out" in msg
+        or "dnspython" in msg
+        or "configurationerror" in msg
+    )
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "space quota" in msg or "over your space" in msg
+
+
+def mark_db_error(idx: int, exc: Exception):
+    now = time.time()
+    if _is_quota_error(exc):
+        # Mute writes to this full DB for 30 minutes
+        _QUOTA_FULL_DBS[idx] = now + 1800
+    elif _is_auth_or_conn_error(exc):
+        # Mute reads & writes to this broken-auth DB for 30 minutes so searches take 0ms
+        _DEAD_READ_DBS[idx] = now + 1800
 
 
 class SimpleCache:
@@ -79,13 +152,8 @@ search_cache = SimpleCache(ttl=900, maxsize=5000)
 file_details_cache = SimpleCache(ttl=3600, maxsize=10000)
 
 
-def _is_quota_error(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    return "space quota" in msg or "8000" in msg or "atlaserror" in msg
-
-
-def add_to_vocab(file_name):
-    if not process:
+def add_to_vocab(file_name: str):
+    if not process or not file_name:
         return
     clean = re.sub(
         r"\b(mkv|mp4|avi|1080p|720p|480p|2160p|bluray|x264|hevc|web-dl|hdrip)\b",
@@ -95,11 +163,11 @@ def add_to_vocab(file_name):
     )
     clean = re.sub(r"[_\-\.\+\[\]\(\)]", " ", clean)
     clean = re.sub(r"\s+", " ", clean).strip()
-    if clean:
+    if clean and len(KNOWN_TITLES) < 5000:
         KNOWN_TITLES.add(clean)
 
 
-def encode_file_id(s_pack, file_ref):
+def encode_file_id(s_pack: str, file_ref: str) -> str:
     """Reconstructs valid Pyrogram V2 File IDs from ultra-compact `_id` + `file_ref` chunks."""
     try:
         s_unpack = unpack(
@@ -117,8 +185,7 @@ def encode_file_id(s_pack, file_ref):
             ),
         )
         return file_id_obj.encode()
-    except Exception as e:
-        logger.error(f"Failed to encode file_id: {e}")
+    except Exception:
         return s_pack
 
 
@@ -140,7 +207,7 @@ class Media(Document):
 class SafeMediaWrapper:
     """Impervious wrapper supporting both Object attribute and Dictionary access."""
 
-    def __init__(self, data):
+    def __init__(self, data: dict):
         self._id = data.get("_id")
         self.file_id = self._id
         self.file_ref = data.get("file_ref", "")
@@ -169,7 +236,7 @@ async def free_up_mongodb_storage() -> Dict[str, Any]:
     """
     Extreme 512MB MongoDB Quota Optimizer:
     1. Drops heavy text indexes.
-    2. Deletes temporary cache collections.
+    2. Deletes temporary cache collections (join requests, resume checkpoints, etc.).
     3. Unsets unused keys to shrink DB by ~60%.
     """
     global ACTIVE_DB_INDEX
@@ -179,22 +246,25 @@ async def free_up_mongodb_storage() -> Dict[str, Any]:
         "compacted_files": 0,
     }
 
-    dbs = [db, db2, db3]
-    for target_db in [d for d in dbs if d is not None]:
+    for idx, target_db in ((1, db), (2, db2), (3, db3)):
+        if target_db is None or time.time() < _DEAD_READ_DBS.get(idx, 0.0):
+            continue
+
         try:
             indexes = await target_db[COLLECTION_NAME].index_information()
             for idx_name in list(indexes.keys()):
                 if idx_name != "_id_":
                     try:
                         await target_db[COLLECTION_NAME].drop_index(idx_name)
-                        report["dropped_indexes"].append(idx_name)
+                        report["dropped_indexes"].append(f"DB{idx}:{idx_name}")
                     except Exception:
                         pass
-        except Exception:
-            pass
+        except Exception as e:
+            mark_db_error(idx, e)
 
         for temp_col in (
             "index_resume",
+            "index_checkpoints",
             "broadcast_tasks",
             "countdown_tasks",
             "fsub_join_requests",
@@ -224,6 +294,7 @@ async def free_up_mongodb_storage() -> Dict[str, Any]:
         except Exception:
             pass
 
+    _QUOTA_FULL_DBS.clear()
     ACTIVE_DB_INDEX = 1
     search_cache.clear()
     return report
@@ -237,7 +308,11 @@ async def get_search_results(
     filter=False,
     is_autocorrect=False,
 ):
-    """Searches seamlessly across all 3 databases to retrieve files."""
+    """
+    Searches seamlessly across all healthy databases.
+    If DB2 or DB3 has `bad auth` or `connection pool paused`, it is automatically
+    skipped so DB1 results are returned in <50ms without any error!
+    """
     cache_key = f"{query_text}_{file_type}_{max_results}_{offset}_{filter}"
     if cached := search_cache.get(cache_key):
         return cached
@@ -306,39 +381,25 @@ async def get_search_results(
     fetch_limit = max_results + 1
     files = []
 
-    # Query DB 1
-    files.extend(
-        await db[COLLECTION_NAME]
-        .find(mongo_query)
-        .sort("_id", -1)
-        .skip(offset)
-        .limit(fetch_limit)
-        .to_list(length=fetch_limit)
-    )
-
-    # Query DB 2 if DB 1 didn't have enough
-    if db2 is not None and len(files) < fetch_limit:
+    for idx, target_db in get_all_healthy_read_dbs():
+        if len(files) >= fetch_limit:
+            break
         rem = fetch_limit - len(files)
-        files.extend(
-            await db2[COLLECTION_NAME]
-            .find(mongo_query)
-            .sort("_id", -1)
-            .skip(max(0, offset - len(files)))
-            .limit(rem)
-            .to_list(length=rem)
-        )
-
-    # Query DB 3 if DB 1 & 2 didn't have enough
-    if db3 is not None and len(files) < fetch_limit:
-        rem = fetch_limit - len(files)
-        files.extend(
-            await db3[COLLECTION_NAME]
-            .find(mongo_query)
-            .sort("_id", -1)
-            .skip(max(0, offset - len(files)))
-            .limit(rem)
-            .to_list(length=rem)
-        )
+        skip_amt = max(0, offset - len(files)) if idx > 1 else offset
+        try:
+            docs = (
+                await target_db[COLLECTION_NAME]
+                .find(mongo_query)
+                .sort("_id", -1)
+                .skip(skip_amt)
+                .limit(rem)
+                .to_list(length=rem)
+            )
+            if docs:
+                files.extend(docs)
+        except Exception as e:
+            mark_db_error(idx, e)
+            continue
 
     has_more = len(files) > max_results
     if has_more:
@@ -404,15 +465,20 @@ def _build_compact_media_doc(media) -> Optional[dict]:
 
 
 async def save_file(media) -> Tuple[bool, int]:
-    """Saves a single file, automatically jumping to DB2 or DB3 if quota is full."""
+    """Saves a single file, automatically jumping to DB2 or DB3 if quota is full or auth fails."""
     global ACTIVE_DB_INDEX
     doc = _build_compact_media_doc(media)
     if not doc:
         return False, 2
 
-    for i in range(ACTIVE_DB_INDEX, 4):
+    now = time.time()
+    for i in (1, 2, 3):
+        if i < ACTIVE_DB_INDEX:
+            continue
         target_db = db if i == 1 else (db2 if i == 2 else db3)
-        if not target_db:
+        if target_db is None:
+            continue
+        if now < _DEAD_READ_DBS.get(i, 0.0) or now < _QUOTA_FULL_DBS.get(i, 0.0):
             continue
 
         try:
@@ -424,19 +490,14 @@ async def save_file(media) -> Tuple[bool, int]:
             return True, 1
         except DuplicateKeyError:
             return False, 0
-        except OperationFailure as e:
-            if _is_quota_error(e):
-                ACTIVE_DB_INDEX = i + 1
-                continue
-            return False, 2
         except Exception as e:
-            if _is_quota_error(e):
+            mark_db_error(i, e)
+            if _is_quota_error(e) or _is_auth_or_conn_error(e):
                 ACTIVE_DB_INDEX = i + 1
                 continue
-            logger.error(f"save_file error: {e}")
             return False, 2
 
-    return False, 3  # Code 3 = All 3 Databases are Full!
+    return False, 8000  # Code 8000 = All available Databases are Full or Unreachable!
 
 
 async def save_batch(media_list) -> Tuple[int, int, int]:
@@ -454,9 +515,14 @@ async def save_batch(media_list) -> Tuple[int, int, int]:
     if not documents:
         return 0, 0, len(media_list)
 
-    for i in range(ACTIVE_DB_INDEX, 4):
+    now = time.time()
+    for i in (1, 2, 3):
+        if i < ACTIVE_DB_INDEX:
+            continue
         target_db = db if i == 1 else (db2 if i == 2 else db3)
-        if not target_db:
+        if target_db is None:
+            continue
+        if now < _DEAD_READ_DBS.get(i, 0.0) or now < _QUOTA_FULL_DBS.get(i, 0.0):
             continue
 
         try:
@@ -468,51 +534,50 @@ async def save_batch(media_list) -> Tuple[int, int, int]:
             search_cache.clear()
             write_errors = bwe.details.get("writeErrors", [])
 
-            # Check if any error is a quota error
             is_quota = any(
-                err.get("code") == 8000
-                or "space quota" in str(err.get("errmsg", "")).lower()
+                "space quota" in str(err.get("errmsg", "")).lower()
+                or "over your space" in str(err.get("errmsg", "")).lower()
                 for err in write_errors
             )
 
             if is_quota:
+                _QUOTA_FULL_DBS[i] = now + 1800
                 ACTIVE_DB_INDEX = i + 1
-                continue  # Retry with next DB
+                continue
 
             inserted = bwe.details.get("nInserted", 0)
             duplicates = sum(1 for err in write_errors if err.get("code") == 11000)
             return inserted, duplicates, len(media_list) - inserted - duplicates
-        except OperationFailure as e:
-            if _is_quota_error(e):
-                ACTIVE_DB_INDEX = i + 1
-                continue
-            return 0, 0, len(media_list)
         except Exception as e:
-            if _is_quota_error(e):
+            mark_db_error(i, e)
+            if _is_quota_error(e) or _is_auth_or_conn_error(e):
                 ACTIVE_DB_INDEX = i + 1
                 continue
             return 0, 0, len(media_list)
 
-    raise OperationFailure("ALL 3 MONGODB CLUSTERS ARE FULL (Code 8000).", code=8000)
+    raise OperationFailure("ALL AVAILABLE MONGODB CLUSTERS ARE FULL (Code 8000).", code=8000)
 
 
 async def get_file_details(query):
-    """Instant RAM-cached lookup across all 3 databases."""
+    """Instant RAM-cached lookup across all healthy databases."""
     q_str = str(query).strip()
     if cached := file_details_cache.get(q_str):
         return cached
 
-    dbs = [db, db2, db3]
-    for target_db in [d for d in dbs if d is not None]:
-        doc = await target_db[COLLECTION_NAME].find_one({"_id": q_str})
-        if not doc and len(q_str) >= 20:
-            doc = await target_db[COLLECTION_NAME].find_one(
-                {"_id": {"$regex": f"^{re.escape(q_str)}"}}
-            )
-        if doc:
-            wrapped = [SafeMediaWrapper(doc)]
-            file_details_cache.set(q_str, wrapped)
-            return wrapped
+    for idx, target_db in get_all_healthy_read_dbs():
+        try:
+            doc = await target_db[COLLECTION_NAME].find_one({"_id": q_str})
+            if not doc and len(q_str) >= 20:
+                doc = await target_db[COLLECTION_NAME].find_one(
+                    {"_id": {"$regex": f"^{re.escape(q_str)}"}}
+                )
+            if doc:
+                wrapped = [SafeMediaWrapper(doc)]
+                file_details_cache.set(q_str, wrapped)
+                return wrapped
+        except Exception as e:
+            mark_db_error(idx, e)
+            continue
 
     return []
 
