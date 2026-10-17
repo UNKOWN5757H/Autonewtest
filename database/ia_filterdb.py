@@ -176,10 +176,7 @@ async def free_up_mongodb_storage() -> Dict[str, Any]:
     try:
         stats_before = await db.command("dbstats")
         report["before_mb"] = round(
-            (
-                stats_before.get("dataSize", 0)
-                + stats_before.get("indexSize", 0)
-            )
+            (stats_before.get("dataSize", 0) + stats_before.get("indexSize", 0))
             / (1024 * 1024),
             2,
         )
@@ -487,7 +484,8 @@ async def save_batch(media_list) -> Tuple[int, int, int]:
         search_cache.clear()
         write_errors = bwe.details.get("writeErrors", [])
         if any(
-            err.get("code") == 8000 or "space quota" in str(err.get("errmsg", "")).lower()
+            err.get("code") == 8000
+            or "space quota" in str(err.get("errmsg", "")).lower()
             for err in write_errors
         ):
             _PRIMARY_DB_QUOTA_FULL = True
