@@ -4,6 +4,7 @@ import hashlib
 import logging
 import re
 import time
+import unicodedata
 from struct import pack, unpack
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -26,6 +27,67 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)
 
 # ============================================================
+# 🔤 STYLISH UNICODE FONT STRIPPER FOR INDEXED FILENAMES
+# ============================================================
+_DB_STYLISH_MAP: Dict[int, str] = {}
+for _sc_k, _sc_v in (
+    ("ᴀ", "a"), ("ʙ", "b"), ("ᴄ", "c"), ("ᴅ", "d"), ("ᴇ", "e"), ("ꜰ", "f"),
+    ("ɢ", "g"), ("ʜ", "h"), ("ɪ", "i"), ("ᴊ", "j"), ("ᴋ", "k"), ("ʟ", "l"),
+    ("ᴍ", "m"), ("ɴ", "n"), ("ᴏ", "o"), ("ᴘ", "p"), ("ǫ", "q"), ("ʀ", "r"),
+    ("ꜱ", "s"), ("ᴛ", "t"), ("ᴜ", "u"), ("ᴠ", "v"), ("ᴡ", "w"), ("x", "x"),
+    ("ʏ", "y"), ("ᴢ", "z"),
+):
+    _DB_STYLISH_MAP[ord(_sc_k)] = _sc_v
+
+for _i in range(26):
+    _DB_STYLISH_MAP[0x24B6 + _i] = chr(ord("A") + _i)
+    _DB_STYLISH_MAP[0x24D0 + _i] = chr(ord("a") + _i)
+    _DB_STYLISH_MAP[0x1F110 + _i] = chr(ord("A") + _i)
+    _DB_STYLISH_MAP[0x1F130 + _i] = chr(ord("A") + _i)
+    _DB_STYLISH_MAP[0x1F150 + _i] = chr(ord("A") + _i)
+    _DB_STYLISH_MAP[0x1F170 + _i] = chr(ord("A") + _i)
+    _DB_STYLISH_MAP[0x1F1E6 + _i] = chr(ord("A") + _i)
+
+for _start_cp, _base_ch, _cnt in (
+    (0x1D400, "A", 26), (0x1D41A, "a", 26), (0x1D434, "A", 26), (0x1D44E, "a", 26),
+    (0x1D468, "A", 26), (0x1D482, "a", 26), (0x1D49C, "A", 26), (0x1D4B6, "a", 26),
+    (0x1D4D0, "A", 26), (0x1D4EA, "a", 26), (0x1D504, "A", 26), (0x1D51E, "a", 26),
+    (0x1D538, "A", 26), (0x1D552, "a", 26), (0x1D56C, "A", 26), (0x1D586, "a", 26),
+    (0x1D5A0, "A", 26), (0x1D5BA, "a", 26), (0x1D5D4, "A", 26), (0x1D5EE, "a", 26),
+    (0x1D608, "A", 26), (0x1D622, "a", 26), (0x1D63C, "A", 26), (0x1D656, "a", 26),
+    (0x1D670, "A", 26), (0x1D68A, "a", 26),
+):
+    for _i in range(_cnt):
+        _DB_STYLISH_MAP[_start_cp + _i] = chr(ord(_base_ch) + _i)
+
+for _d_start in (0x1D7CE, 0x1D7D8, 0x1D7E2, 0x1D7EC, 0x1D7F6):
+    for _i in range(10):
+        _DB_STYLISH_MAP[_d_start + _i] = str(_i)
+
+
+def normalize_db_filename(text: str) -> str:
+    if not text:
+        return "File"
+    text = text.translate(_DB_STYLISH_MAP)
+    out = []
+    for ch in text:
+        cp = ord(ch)
+        if 0x0900 <= cp <= 0x0D7F:
+            out.append(ch)
+        elif 0x0300 <= cp <= 0x036F or 0x20D0 <= cp <= 0x20FF or 0xFE00 <= cp <= 0xFE0F:
+            continue
+        elif cp > 127:
+            norm_ch = unicodedata.normalize("NFKC", ch).translate(_DB_STYLISH_MAP)
+            norm_kd = unicodedata.normalize("NFKD", norm_ch)
+            ascii_only = "".join(c for c in norm_kd if ord(c) < 128)
+            if ascii_only:
+                out.append(ascii_only)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+# ============================================================
 # 🗄️ DYNAMIC UNLIMITED MULTI-DATABASE ENGINE (PRIMARY + /datadb)
 # ============================================================
 _MONGO_KWARGS = {
@@ -35,31 +97,24 @@ _MONGO_KWARGS = {
     "retryWrites": True,
 }
 
-# Primary Database (DB 1) from info.DATABASE_URI
 db = AsyncIOMotorClient(DATABASE_URI, **_MONGO_KWARGS)[DATABASE_NAME]
 instance = MotorAsyncIOInstance(db)
 
-# Legacy aliases set to None (db2 and db3 removed; all extra DBs are managed via /datadb)
 db2 = None
 db3 = None
 
-# Unlimited dynamic databases added via /datadb command
 MULTI_DB_ENABLED: bool = True
-DYNAMIC_DB_CLIENTS: Dict[str, Any] = {}  # db_id -> AsyncIOMotorDatabase
-DYNAMIC_DB_META: List[Dict[str, Any]] = (
-    []
-)  # [{"id": str, "name": str, "uri": str, "db_name": str}]
+DYNAMIC_DB_CLIENTS: Dict[str, Any] = {}
+DYNAMIC_DB_META: List[Dict[str, Any]] = []
 
-# Circuit-breaker trackers so a broken/full DB never freezes the bot or spams logs
-_DEAD_READ_DBS: Dict[int, float] = {}  # db_idx -> cooldown_until_ts
-_QUOTA_FULL_DBS: Dict[int, float] = {}  # db_idx -> cooldown_until_ts
+_DEAD_READ_DBS: Dict[int, float] = {}
+_QUOTA_FULL_DBS: Dict[int, float] = {}
 
-ACTIVE_DB_INDEX = 1  # 1 = Primary DB, 2+ = Dynamic /datadb URLs
+ACTIVE_DB_INDEX = 1
 KNOWN_TITLES = set()
 
 
 def extract_db_label_from_uri(uri: str, fallback_idx: int = 1) -> Tuple[str, str]:
-    """Extracts a clean display name (e.g. user@cluster0) and database name from a MongoDB URI."""
     uri_clean = uri.strip()
     db_name = DATABASE_NAME
     try:
@@ -86,7 +141,6 @@ def make_db_id(uri: str) -> str:
 def register_dynamic_db_entry(
     uri: str, custom_name: Optional[str] = None, db_name: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
-    """Registers or updates a dynamic MongoDB URI in the live runtime pool."""
     uri_str = str(uri or "").strip()
     if not uri_str.startswith(("mongodb://", "mongodb+srv://")):
         return None
@@ -171,12 +225,6 @@ def is_multi_db_enabled() -> bool:
 def get_all_configured_dbs(
     include_when_disabled: bool = False,
 ) -> List[Tuple[int, Any, str]]:
-    """
-    Returns [(index, db_handle, label), ...] for all configured databases:
-    - Index 1: Primary DATABASE_URI
-    - Index 2+: Unlimited dynamic URLs added via /datadb
-    When MULTI_DB_ENABLED is False (and include_when_disabled is False), returns only DB 1.
-    """
     out: List[Tuple[int, Any, str]] = [(1, db, "Primary DB")]
     if not MULTI_DB_ENABLED and not include_when_disabled:
         return out
@@ -198,10 +246,6 @@ def get_all_configured_dbs(
 
 
 def get_writable_System_db():
-    """
-    Returns the first healthy, non-full database handle for plugins (fsub, multibot, datadb, etc.)
-    when the primary 512MB cluster is full!
-    """
     now = time.time()
     all_dbs = get_all_configured_dbs(include_when_disabled=True)
     for idx, target, _ in all_dbs:
@@ -301,22 +345,37 @@ def add_to_vocab(file_name: str):
 
 
 def encode_file_id(s_pack: str, file_ref: str) -> str:
-    """Reconstructs valid Pyrogram V2 File IDs from ultra-compact `_id` + `file_ref` chunks."""
+    """
+    Reconstructs valid Pyrogram V2 File IDs from compact `_id` + `file_ref` chunks,
+    including `sub_type=0` so Pyrogram v2.2.26 never raises [400 MEDIA_EMPTY].
+    """
+    if not s_pack:
+        return ""
     try:
-        s_unpack = unpack(
-            "<iiqq", base64.urlsafe_b64decode(s_pack + "=" * (-len(s_pack) % 4))
+        padded_pack = s_pack + "=" * (-len(s_pack) % 4)
+        s_unpack = unpack("<iiqq", base64.urlsafe_b64decode(padded_pack))
+        ref_bytes = (
+            base64.urlsafe_b64decode(file_ref + "=" * (-len(file_ref) % 4))
+            if file_ref
+            else b""
         )
-        file_id_obj = FileId(
-            file_type=FileType(s_unpack[0]),
-            dc_id=s_unpack[1],
-            media_id=s_unpack[2],
-            access_hash=s_unpack[3],
-            file_reference=(
-                base64.urlsafe_b64decode(file_ref + "=" * (-len(file_ref) % 4))
-                if file_ref
-                else b""
-            ),
-        )
+        try:
+            file_id_obj = FileId(
+                file_type=FileType(s_unpack[0]),
+                dc_id=s_unpack[1],
+                media_id=s_unpack[2],
+                access_hash=s_unpack[3],
+                file_reference=ref_bytes,
+                sub_type=0,
+            )
+        except TypeError:
+            file_id_obj = FileId(
+                file_type=FileType(s_unpack[0]),
+                dc_id=s_unpack[1],
+                media_id=s_unpack[2],
+                access_hash=s_unpack[3],
+                file_reference=ref_bytes,
+            )
         return file_id_obj.encode()
     except Exception:
         return s_pack
@@ -349,14 +408,14 @@ class SafeMediaWrapper:
         self.file_type = data.get("file_type")
         self.mime_type = data.get("mime_type")
         self.caption = data.get("caption")
+        self.chat_id = data.get("chat_id")
+        self.msg_id = data.get("msg_id")
 
         raw = data.get("file_id_raw")
-        if raw:
-            self.full_file_id = raw
+        if raw and len(str(raw)) > 30:
+            self.full_file_id = str(raw)
         else:
-            self.full_file_id = (
-                encode_file_id(self._id, self.file_ref) if self.file_ref else self._id
-            )
+            self.full_file_id = encode_file_id(str(self._id or ""), str(self.file_ref or ""))
 
     def get(self, key, default=None):
         return getattr(self, key, default)
@@ -365,14 +424,47 @@ class SafeMediaWrapper:
         return getattr(self, key)
 
 
+async def update_cached_file_id(
+    short_id: str, new_raw_file_id: str, chat_id: Optional[int] = None, msg_id: Optional[int] = None
+):
+    """
+    Self-healing helper: when Main Bot refreshes a file_id (e.g. from a Worker Bot or channel),
+    updates both RAM cache and MongoDB so future clicks are 100% instant!
+    """
+    try:
+        _, new_ref = unpack_new_file_id(new_raw_file_id)
+    except Exception:
+        new_ref = ""
+
+    upd_fields: Dict[str, Any] = {"file_id_raw": new_raw_file_id}
+    if new_ref:
+        upd_fields["file_ref"] = new_ref
+    if chat_id:
+        upd_fields["chat_id"] = int(chat_id)
+    if msg_id:
+        upd_fields["msg_id"] = int(msg_id)
+
+    cached = file_details_cache.get(str(short_id))
+    if cached and len(cached) > 0:
+        cached[0].full_file_id = new_raw_file_id
+        if new_ref:
+            cached[0].file_ref = new_ref
+
+    for idx, target_db in get_all_healthy_read_dbs():
+        try:
+            res = await target_db[COLLECTION_NAME].update_one(
+                {"_id": str(short_id)}, {"$set": upd_fields}
+            )
+            if res.modified_count > 0:
+                break
+        except Exception:
+            continue
+
+
 # ============================================================
 # 🔥 INSTANT ALL-DATABASE WIPE & LIVE MULTI-DATABASE STATS ENGINE
 # ============================================================
 async def nuke_all_media_dbs() -> Dict[str, Any]:
-    """
-    Instantly wipes all movie/media files across Primary DB + all /datadb URLs
-    using `.drop()` so it NEVER hits `pymongo.errors.NetworkTimeout`!
-    """
     global ACTIVE_DB_INDEX
     summary: Dict[str, Any] = {
         "total_deleted": 0,
@@ -442,7 +534,7 @@ async def nuke_all_media_dbs() -> Dict[str, Any]:
 async def _fetch_single_db_stats(
     idx: int, target_db: Any, label: str = ""
 ) -> Dict[str, Any]:
-    quota_limit = 536870912  # 512 MB in bytes
+    quota_limit = 536870912
     if target_db is None:
         return {
             "index": idx,
@@ -512,10 +604,6 @@ async def _fetch_single_db_stats(
 
 
 async def get_all_dbs_stats() -> Dict[str, Any]:
-    """
-    Queries Primary DB + all unlimited /datadb URLs in parallel and returns
-    individual + combined file counts, used storage, and free storage.
-    """
     all_configured = get_all_configured_dbs(include_when_disabled=True)
     tasks = [
         _fetch_single_db_stats(idx, handle, lbl) for idx, handle, lbl in all_configured
@@ -549,12 +637,6 @@ async def get_all_dbs_stats() -> Dict[str, Any]:
 
 
 async def free_up_mongodb_storage() -> Dict[str, Any]:
-    """
-    Extreme 512MB MongoDB Quota Optimizer across ALL configured databases:
-    1. Drops heavy text indexes.
-    2. Deletes temporary cache collections.
-    3. Unsets unused keys to shrink DB by ~60%.
-    """
     global ACTIVE_DB_INDEX
     report = {
         "dropped_indexes": [],
@@ -594,16 +676,11 @@ async def free_up_mongodb_storage() -> Dict[str, Any]:
                 pass
 
         try:
-            unset_fields = {"file_id_raw": "", "mime_type": ""}
+            unset_fields = {"mime_type": ""}
             if not USE_CAPTION_FILTER:
                 unset_fields["caption"] = ""
             res_upd = await target_db[COLLECTION_NAME].update_many(
-                {
-                    "$or": [
-                        {"file_id_raw": {"$exists": True}},
-                        {"mime_type": {"$exists": True}},
-                    ]
-                },
+                {"mime_type": {"$exists": True}},
                 {"$unset": unset_fields},
             )
             report["compacted_files"] += getattr(res_upd, "modified_count", 0)
@@ -624,7 +701,6 @@ async def get_search_results(
     filter=False,
     is_autocorrect=False,
 ):
-    """Searches seamlessly across Primary DB + all healthy /datadb URLs."""
     cache_key = f"{query_text}_{file_type}_{max_results}_{offset}_{filter}_{int(MULTI_DB_ENABLED)}"
     if cached := search_cache.get(cache_key):
         return cached
@@ -751,33 +827,44 @@ async def get_search_results(
 
 
 def _build_compact_media_doc(media) -> Optional[dict]:
-    """Builds ultra-compact media document (~65% smaller) to save quota."""
+    """
+    Builds clean media document:
+    - Automatically strips stylish Unicode fonts from file_name on save
+    - Preserves `file_ref` and `file_id_raw` + optional `chat_id`/`msg_id` so files never fail with MEDIA_EMPTY!
+    """
     try:
-        file_id, file_ref = unpack_new_file_id(media.file_id)
-        file_name = re.sub(
-            r"[_\-\.\+]", " ", str(getattr(media, "file_name", "") or "File")
-        )
-        file_name = re.sub(r"\s+", " ", file_name).strip()
+        raw_fid = str(getattr(media, "file_id", "") or "")
+        file_id, file_ref = unpack_new_file_id(raw_fid)
+        raw_name = str(getattr(media, "file_name", "") or "File")
+        norm_name = normalize_db_filename(raw_name)
+        file_name = re.sub(r"[_\-\.\+]", " ", norm_name)
+        file_name = re.sub(r"\s+", " ", file_name).strip() or "File"
         add_to_vocab(file_name)
 
-        doc = {
+        doc: Dict[str, Any] = {
             "_id": file_id,
             "file_ref": file_ref,
+            "file_id_raw": raw_fid,
             "file_name": file_name,
             "file_size": int(getattr(media, "file_size", 0) or 0),
         }
         ftype = getattr(media, "file_type", None)
         if ftype:
             doc["file_type"] = str(ftype)
+        if getattr(media, "chat_id", None):
+            doc["chat_id"] = int(getattr(media, "chat_id"))
+        if getattr(media, "msg_id", None):
+            doc["msg_id"] = int(getattr(media, "msg_id"))
         if USE_CAPTION_FILTER and getattr(media, "caption", None):
-            doc["caption"] = str(getattr(media, "caption", ""))[:300]
+            doc["caption"] = normalize_db_filename(str(getattr(media, "caption", "")))[
+                :300
+            ]
         return doc
     except Exception:
         return None
 
 
 async def save_file(media) -> Tuple[bool, int]:
-    """Saves a single file, automatically jumping across Primary DB and all /datadb URLs when quota is full."""
     global ACTIVE_DB_INDEX
     doc = _build_compact_media_doc(media)
     if not doc:
@@ -813,7 +900,6 @@ async def save_file(media) -> Tuple[bool, int]:
 
 
 async def save_batch(media_list) -> Tuple[int, int, int]:
-    """Saves a batch of media, automatically jumping across Primary DB and all /datadb URLs when quota is full."""
     global ACTIVE_DB_INDEX
     if not media_list:
         return 0, 0, 0
@@ -874,7 +960,6 @@ async def save_batch(media_list) -> Tuple[int, int, int]:
 
 
 async def get_file_details(query):
-    """Instant RAM-cached lookup across all healthy databases."""
     q_str = str(query).strip()
     if cached := file_details_cache.get(q_str):
         return cached
