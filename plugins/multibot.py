@@ -1,16 +1,16 @@
 import asyncio
 import html
 import inspect
+import math
 import re
 import time
-from logging import ERROR, INFO, getLogger
+from logging import INFO, getLogger
 from typing import Any, Dict, List, Optional, Tuple
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from pyrogram import Client, enums, filters
 from pyrogram.errors import (
     ChatWriteForbidden,
-    FloodWait,
     Forbidden,
     MessageIdInvalid,
     MessageNotModified,
@@ -27,22 +27,18 @@ from pyrogram.types import (
 
 import info
 
-# Safe optional imports for multi-database health helpers
 try:
-    from database.ia_filterdb import (
-        get_all_healthy_read_dbs,
-        get_writable_System_db,
-        mark_db_error,
-    )
+    from database.ia_filterdb import db as _db1
+    from database.ia_filterdb import db2 as _db2
+    from database.ia_filterdb import db3 as _db3
+    from database.ia_filterdb import get_all_healthy_read_dbs, mark_db_error
 except ImportError:
+    _db1 = _db2 = _db3 = None
     get_all_healthy_read_dbs = None
-    get_writable_System_db = None
     mark_db_error = None
 
 logger = getLogger(__name__)
 logger.setLevel(INFO)
-
-MAX_WORKER_BOTS = int(getattr(info, "MAX_WORKER_BOTS", 10) or 10)
 
 # ============================================================
 # 🛡️ PYROGRAM v2.2.26 COMPATIBILITY & BUTTON HELPERS
@@ -154,142 +150,169 @@ async def is_global_admin(user_id: int) -> bool:
 
 
 # ============================================================
-# 🤖 QUOTA-SAFE MONGODB & LIVE WORKER BOT POOL ENGINE
+# 🤖 REDUNDANT MULTI-DB & UNLIMITED WORKER BOT ENGINE
 # ============================================================
-_mb_col = None
-_MB_DB_QUOTA_FULL_UNTIL: float = 0.0
-
+_FALLBACK_DB = None
 try:
-    _DB_CLIENT = AsyncIOMotorClient(
-        info.DATABASE_URI,
-        serverSelectionTimeoutMS=4000,
-        connectTimeoutMS=4000,
-        socketTimeoutMS=8000,
-    )
-    _BOT_DB = _DB_CLIENT[info.DATABASE_NAME]
-    _mb_col = _BOT_DB["multibot_workers"]
-except Exception as e:
-    logger.error(f"MultiBot DB init error: {e}")
+    if _db1 is None:
+        _DB_CLIENT = AsyncIOMotorClient(
+            info.DATABASE_URI,
+            serverSelectionTimeoutMS=4000,
+            connectTimeoutMS=4000,
+            socketTimeoutMS=8000,
+        )
+        _FALLBACK_DB = _DB_CLIENT[info.DATABASE_NAME]
+except Exception:
+    _FALLBACK_DB = None
 
-# In-memory state & running Pyrogram worker clients
 _MULTIBOT_CONFIG_CACHE: Dict[str, Any] = {
     "enabled": bool(getattr(info, "MULTI_BOT_ENABLED", True)),
-    "bots": [],  # List of dicts: {"bot_id": int, "name": str, "username": str, "token": str}
+    "bots": [],  # Unlimited list of dicts: {"bot_id": int, "name": str, "username": str, "token": str}
 }
 _CONFIG_LOADED = False
 ACTIVE_WORKER_CLIENTS: Dict[int, Client] = {}
 _WORKER_LOCK = asyncio.Lock()
-
-# Interactive token listener state: chat_id -> {"future": Future, "user_id": int, "prompt_msg": Message}
 _MB_WAITING_INPUT: Dict[int, Dict[str, Any]] = {}
 
 
-def _get_writable_mb_col():
-    if callable(get_writable_System_db):
+def _get_all_candidate_dbs() -> List[Tuple[int, Any]]:
+    if callable(get_all_healthy_read_dbs):
+        dbs = get_all_healthy_read_dbs()
+        if dbs:
+            return dbs
+    out = []
+    for idx, d in ((1, _db1), (2, _db2), (3, _db3), (1, _FALLBACK_DB)):
+        if d is not None and all(x[1] is not d for x in out):
+            out.append((idx, d))
+    return out
+
+
+def _is_quota_err(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return "space quota" in s or "over your space" in s or "8000" in s
+
+
+async def _free_temp_space_on_db(target_db: Any):
+    """Frees temporary collections on a full 512MB DB so tiny config documents can be saved."""
+    for temp_col in (
+        "fsub_join_requests",
+        "fsub_verified_users",
+        "index_checkpoints",
+        "index_resume",
+        "broadcast_tasks",
+        "countdown_tasks",
+    ):
         try:
-            target_db = get_writable_System_db()
-            if target_db is not None:
-                return target_db["multibot_workers"]
+            await target_db[temp_col].delete_many({})
         except Exception:
             pass
-    return _mb_col
-
-
-def _is_quota_or_auth_err(exc: Exception) -> bool:
-    s = str(exc).lower()
-    return (
-        "space quota" in s
-        or "over your space" in s
-        or "8000" in s
-        or "bad auth" in s
-        or "authentication failed" in s
-        or "paused" in s
-    )
 
 
 async def load_multibot_config(force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    Loads and merges saved Worker Bots across ALL healthy databases (DB 1, DB 2, DB 3)
+    plus any tokens in info.WORKER_BOT_TOKENS so no worker bots are ever lost on restart!
+    """
     global _CONFIG_LOADED, _MULTIBOT_CONFIG_CACHE
     if _CONFIG_LOADED and not force_refresh:
         return _MULTIBOT_CONFIG_CACHE
 
-    doc = None
-    if callable(get_all_healthy_read_dbs):
-        for idx, target_db in get_all_healthy_read_dbs():
-            try:
-                doc = await target_db["multibot_workers"].find_one(
-                    {"_id": "master_config"}
-                )
-                if doc:
-                    break
-            except Exception as e:
-                if callable(mark_db_error):
-                    mark_db_error(idx, e)
-                continue
-    elif _mb_col is not None:
+    merged_bots_by_id: Dict[int, Dict[str, Any]] = {}
+    latest_updated_at = -1.0
+    enabled_state = bool(_MULTIBOT_CONFIG_CACHE.get("enabled", True))
+
+    for idx, target_db in _get_all_candidate_dbs():
         try:
-            doc = await _mb_col.find_one({"_id": "master_config"})
-        except Exception:
-            pass
+            doc = await target_db["multibot_workers"].find_one({"_id": "master_config"})
+            if not doc:
+                continue
+            doc_ts = float(doc.get("updated_at", 0.0) or 0.0)
+            if doc_ts >= latest_updated_at:
+                latest_updated_at = doc_ts
+                enabled_state = bool(doc.get("enabled", True))
 
-    if doc:
-        _MULTIBOT_CONFIG_CACHE["enabled"] = bool(doc.get("enabled", True))
-        _MULTIBOT_CONFIG_CACHE["bots"] = list(doc.get("bots", []))
+            for b in doc.get("bots", []):
+                if not isinstance(b, dict) or not b.get("token"):
+                    continue
+                tok_str = str(b["token"]).strip()
+                b_id = int(b.get("bot_id") or tok_str.split(":", 1)[0])
+                merged_bots_by_id[b_id] = {
+                    "bot_id": b_id,
+                    "name": str(b.get("name") or f"Bot {b_id}"),
+                    "username": str(b.get("username") or ""),
+                    "token": tok_str,
+                }
+        except Exception as e:
+            if callable(mark_db_error):
+                mark_db_error(idx, e)
+            continue
 
-    # Also merge any tokens pre-configured via info.WORKER_BOT_TOKENS env var
+    # Merge any existing in-memory bots not yet flushed
+    for b in _MULTIBOT_CONFIG_CACHE.get("bots", []):
+        if isinstance(b, dict) and b.get("token"):
+            b_id = int(b["bot_id"])
+            if b_id not in merged_bots_by_id:
+                merged_bots_by_id[b_id] = b
+
+    # Merge any tokens pre-configured via info.WORKER_BOT_TOKENS env var
     env_tokens = getattr(info, "WORKER_BOT_TOKENS", []) or []
-    existing_tokens = {b.get("token") for b in _MULTIBOT_CONFIG_CACHE["bots"]}
+    existing_tokens = {b["token"] for b in merged_bots_by_id.values()}
     for tok in env_tokens:
         tok_str = str(tok).strip()
-        if (
-            tok_str
-            and tok_str not in existing_tokens
-            and len(_MULTIBOT_CONFIG_CACHE["bots"]) < MAX_WORKER_BOTS
-        ):
-            bot_id_prefix = tok_str.split(":", 1)[0]
-            if bot_id_prefix.isdigit():
-                _MULTIBOT_CONFIG_CACHE["bots"].append(
-                    {
-                        "bot_id": int(bot_id_prefix),
-                        "name": f"Worker {bot_id_prefix[-4:]}",
-                        "username": "",
-                        "token": tok_str,
-                    }
-                )
+        if tok_str and tok_str not in existing_tokens:
+            prefix = tok_str.split(":", 1)[0]
+            if prefix.isdigit():
+                b_id = int(prefix)
+                merged_bots_by_id[b_id] = {
+                    "bot_id": b_id,
+                    "name": f"Worker {prefix[-4:]}",
+                    "username": "",
+                    "token": tok_str,
+                }
                 existing_tokens.add(tok_str)
 
+    _MULTIBOT_CONFIG_CACHE["enabled"] = enabled_state
+    _MULTIBOT_CONFIG_CACHE["bots"] = list(merged_bots_by_id.values())
     _CONFIG_LOADED = True
     return _MULTIBOT_CONFIG_CACHE
 
 
 async def save_multibot_config():
     """
-    Saves Multi-Bot configuration to a writable DB if available.
-    Never spams error logs if the 512MB MongoDB cluster is full (RAM cache stays active).
+    Saves Multi-Bot configuration redundantly across ALL available databases (DB 1, DB 2, DB 3).
+    If a DB hits the 512MB quota, automatically purges temporary collections and retries
+    so worker bots never disappear on restart!
     """
-    global _MB_DB_QUOTA_FULL_UNTIL
     now = time.time()
-    if now < _MB_DB_QUOTA_FULL_UNTIL:
-        return
+    payload = {
+        "enabled": bool(_MULTIBOT_CONFIG_CACHE.get("enabled", True)),
+        "bots": list(_MULTIBOT_CONFIG_CACHE.get("bots", [])),
+        "updated_at": now,
+    }
 
-    target_col = _get_writable_mb_col()
-    if target_col is not None:
+    for idx, target_db in _get_all_candidate_dbs():
         try:
-            await target_col.update_one(
+            await target_db["multibot_workers"].update_one(
                 {"_id": "master_config"},
-                {
-                    "$set": {
-                        "enabled": bool(_MULTIBOT_CONFIG_CACHE.get("enabled", True)),
-                        "bots": list(_MULTIBOT_CONFIG_CACHE.get("bots", [])),
-                        "updated_at": now,
-                    }
-                },
+                {"$set": payload},
                 upsert=True,
             )
         except Exception as e:
-            if _is_quota_or_auth_err(e):
-                # Mute DB write attempts for 30 minutes when 512MB quota is full
-                _MB_DB_QUOTA_FULL_UNTIL = now + 1800
-                return
+            if _is_quota_err(e):
+                try:
+                    await _free_temp_space_on_db(target_db)
+                    await target_db["multibot_workers"].update_one(
+                        {"_id": "master_config"},
+                        {"$set": payload},
+                        upsert=True,
+                    )
+                    continue
+                except Exception as retry_err:
+                    if callable(mark_db_error):
+                        mark_db_error(idx, retry_err)
+            else:
+                if callable(mark_db_error):
+                    mark_db_error(idx, e)
 
 
 async def start_single_worker(bot_data: Dict[str, Any]) -> Optional[Client]:
@@ -309,7 +332,7 @@ async def start_single_worker(bot_data: Dict[str, Any]) -> Optional[Client]:
             api_hash=info.API_HASH,
             bot_token=token,
             in_memory=True,
-            no_updates=True,  # Pure indexer worker: doesn't waste CPU polling group messages!
+            no_updates=True,
             workers=16,
             sleep_threshold=60,
         )
@@ -349,8 +372,7 @@ async def stop_all_workers():
 
 async def ensure_all_workers_started() -> List[Client]:
     """
-    Ensures all configured worker bots are started and connected if Multi-Bot is ON.
-    Returns the list of active worker Client instances.
+    Ensures all configured worker bots (unlimited) are started and connected if Multi-Bot is ON.
     """
     async with _WORKER_LOCK:
         cfg = await load_multibot_config()
@@ -362,19 +384,29 @@ async def ensure_all_workers_started() -> List[Client]:
             return []
 
         clients: List[Client] = []
-        tasks = [start_single_worker(b) for b in bots_list[:MAX_WORKER_BOTS]]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for res in results:
-            if isinstance(res, Client):
-                clients.append(res)
+        updated_metadata = False
+
+        # Start in batches of 15 to prevent flooding Telegram login servers when 50+ bots are added
+        for i in range(0, len(bots_list), 15):
+            batch = bots_list[i : i + 15]
+            results = await asyncio.gather(
+                *[start_single_worker(b) for b in batch], return_exceptions=True
+            )
+            for b, res in zip(batch, results):
+                if isinstance(res, Client):
+                    clients.append(res)
+                    if b.get("username"):
+                        updated_metadata = True
+
+        if updated_metadata:
+            asyncio.create_task(save_multibot_config())
+
         return clients
 
 
 async def get_indexing_clients(main_bot: Client) -> List[Client]:
     """
-    Used by plugins/index.py!
-    Returns [main_bot] + all active Worker Bots when Multi-Bot Mode is ON.
-    If Multi-Bot Mode is OFF or no worker bots exist, returns [main_bot].
+    Returns [main_bot] + all active Worker Bots (unlimited) when Multi-Bot Mode is ON.
     """
     cfg = await load_multibot_config()
     if not cfg.get("enabled", True) or not cfg.get("bots"):
@@ -465,7 +497,7 @@ async def wait_for_bot_token(
 
 
 # ============================================================
-# 🎨 UI BUILDERS FOR /bots AND BOT LIST
+# 🎨 UI BUILDERS FOR /bots AND PAGINATED BOT LIST (UNLIMITED BOTS)
 # ============================================================
 async def build_main_bots_panel() -> Tuple[str, InlineKeyboardMarkup]:
     cfg = await load_multibot_config()
@@ -496,14 +528,14 @@ async def build_main_bots_panel() -> Tuple[str, InlineKeyboardMarkup]:
         "🤖 <b>Multi-Bot Master-Worker Manager</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚙️ <b>Multi-Bot Status:</b> <code>{status_badge}</code>\n"
-        f"🤖 <b>Added Worker Bots:</b> <code>{count} / {MAX_WORKER_BOTS}</code>\n"
+        f"🤖 <b>Added Worker Bots:</b> <code>{count} (Unlimited)</code>\n"
         f"⚡ <b>Online Workers:</b> <code>{online_count} Active</code>\n"
         f"🚀 <b>Indexing Speed:</b> <code>{speed_multiplier}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "💡 <b>How Multi-Bot Works for 10 Lakh+ Files:</b>\n"
         "• Make your Worker Bots <b>Admin</b> in your file channel.\n"
         "• When you run <code>/index</code>, the channel is automatically split into equal parts across all bots simultaneously!\n"
-        "• All bots save directly into your shared 3-Database MongoDB cluster."
+        "• Saved permanently across your 3-Database MongoDB cluster."
     )
 
     on_label = "✅ Multi Bot On" if enabled else "Multi Bot On"
@@ -530,14 +562,14 @@ async def build_main_bots_panel() -> Tuple[str, InlineKeyboardMarkup]:
             ),
             create_btn(
                 f"📋 Bot list ({count})",
-                callback_data="mb#list",
+                callback_data="mb#list#0",
                 style=BTN_PRIMARY,
             ),
         ],
         [
             create_btn(
                 "➖ Remove Bot",
-                callback_data="mb#remmenu",
+                callback_data="mb#list#0",
             ),
             create_btn(
                 "🗑️ Remove All Bot",
@@ -552,15 +584,15 @@ async def build_main_bots_panel() -> Tuple[str, InlineKeyboardMarkup]:
     return text, InlineKeyboardMarkup(buttons)
 
 
-async def build_bot_list_panel() -> Tuple[str, InlineKeyboardMarkup]:
+async def build_bot_list_panel(page: int = 0) -> Tuple[str, InlineKeyboardMarkup]:
     cfg = await load_multibot_config()
     bots = cfg.get("bots", [])
 
     if not bots:
         text = (
-            "📋 <b>Worker Bot List (0 / 10)</b>\n"
+            "📋 <b>Worker Bot List (0 Added)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
-            "<i>No worker bots added yet. Click <b>➕ Add Bot</b> to add up to 10 bot tokens for ultra-fast parallel indexing!</i>"
+            "<i>No worker bots added yet. Click <b>➕ Add Bot</b> to add unlimited bot tokens for ultra-fast parallel indexing!</i>"
         )
         buttons = [
             [
@@ -570,13 +602,19 @@ async def build_bot_list_panel() -> Tuple[str, InlineKeyboardMarkup]:
         ]
         return text, InlineKeyboardMarkup(buttons)
 
+    per_page = 10
+    total_pages = max(1, math.ceil(len(bots) / per_page))
+    page = max(0, min(page, total_pages - 1))
+    start_idx = page * per_page
+    sliced_bots = bots[start_idx : start_idx + per_page]
+
     lines = [
-        f"📋 <b>Configured Worker Bots ({len(bots)} / {MAX_WORKER_BOTS})</b>",
+        f"📋 <b>Configured Worker Bots ({len(bots)} Total • Page {page + 1}/{total_pages})</b>",
         "━━━━━━━━━━━━━━━━━━━━━",
     ]
     buttons: List[List[InlineKeyboardButton]] = []
 
-    for idx, b in enumerate(bots, start=1):
+    for idx, b in enumerate(sliced_bots, start=start_idx + 1):
         b_id = int(b.get("bot_id", 0))
         b_name = html.escape(str(b.get("name", f"Bot {idx}")))
         b_uname = html.escape(str(b.get("username", "unknown")))
@@ -599,7 +637,7 @@ async def build_bot_list_panel() -> Tuple[str, InlineKeyboardMarkup]:
                 ),
                 create_btn(
                     "Remove bot",
-                    callback_data=f"mb#del#{b_id}",
+                    callback_data=f"mb#del#{b_id}#{page}",
                     style=BTN_DANGER,
                 ),
             ]
@@ -609,6 +647,25 @@ async def build_bot_list_panel() -> Tuple[str, InlineKeyboardMarkup]:
     lines.append(
         "⚠️ <i>Remember to make all worker bots Admin in your indexing channel!</i>"
     )
+
+    if total_pages > 1:
+        nav_row: List[InlineKeyboardButton] = []
+        if page > 0:
+            nav_row.append(
+                create_btn(
+                    "⬅️ Prev", callback_data=f"mb#list#{page - 1}", style=BTN_PRIMARY
+                )
+            )
+        nav_row.append(
+            create_btn(f"📄 {page + 1}/{total_pages}", callback_data="mb#noop")
+        )
+        if page < total_pages - 1:
+            nav_row.append(
+                create_btn(
+                    "Next ➡️", callback_data=f"mb#list#{page + 1}", style=BTN_PRIMARY
+                )
+            )
+        buttons.append(nav_row)
 
     buttons.append(
         [
@@ -632,9 +689,7 @@ async def build_bot_list_panel() -> Tuple[str, InlineKeyboardMarkup]:
 # ============================================================
 # 🎯 /bots COMMAND & CALLBACK HANDLERS
 # ============================================================
-@Client.on_message(
-    filters.command(["bots", "multibot", "workerbots"]) & filters.incoming, group=-2
-)
+@Client.on_message(filters.command("bots") & filters.incoming, group=-2)
 async def bots_command_handler(client: Client, message: Message):
     uid = (
         message.from_user.id
@@ -665,6 +720,9 @@ async def multibot_callback_handler(client: Client, query: CallbackQuery):
     chat_id = query.message.chat.id
     parts = query.data.split("#")
     action = parts[1] if len(parts) > 1 else "main"
+
+    if action == "noop":
+        return await safe_answer(query)
 
     if action == "cancel_input":
         cancel_mb_input(chat_id)
@@ -706,9 +764,10 @@ async def multibot_callback_handler(client: Client, query: CallbackQuery):
         text, markup = await build_main_bots_panel()
         return await safe_edit_text(query.message, text, reply_markup=markup)
 
-    if action in ["list", "remmenu"]:
+    if action == "list":
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         await safe_answer(query)
-        text, markup = await build_bot_list_panel()
+        text, markup = await build_bot_list_panel(page=page)
         return await safe_edit_text(query.message, text, reply_markup=markup)
 
     if action == "info":
@@ -719,6 +778,8 @@ async def multibot_callback_handler(client: Client, query: CallbackQuery):
         if len(parts) < 3 or not parts[2].lstrip("-").isdigit():
             return await safe_answer(query, "Invalid Bot ID!", show_alert=True)
         target_id = int(parts[2])
+        page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+
         cfg = await load_multibot_config()
         before_len = len(cfg.get("bots", []))
         removed_name = "Bot"
@@ -738,7 +799,7 @@ async def multibot_callback_handler(client: Client, query: CallbackQuery):
         else:
             await safe_answer(query, "Bot already removed.")
 
-        text, markup = await build_bot_list_panel()
+        text, markup = await build_bot_list_panel(page=page)
         return await safe_edit_text(query.message, text, reply_markup=markup)
 
     if action == "remall_ask":
@@ -781,12 +842,6 @@ async def multibot_callback_handler(client: Client, query: CallbackQuery):
     if action == "add":
         cfg = await load_multibot_config()
         cur_bots = cfg.get("bots", [])
-        if len(cur_bots) >= MAX_WORKER_BOTS:
-            return await safe_answer(
-                query,
-                f"⚠️ Maximum limit of {MAX_WORKER_BOTS} Worker Bots reached! Remove one first.",
-                show_alert=True,
-            )
 
         await safe_answer(query)
         cancel_kb = InlineKeyboardMarkup(
@@ -794,10 +849,10 @@ async def multibot_callback_handler(client: Client, query: CallbackQuery):
         )
         prompt_msg = await safe_reply_text(
             query.message,
-            f"🤖 <b>Add Worker Bot ({len(cur_bots) + 1} / {MAX_WORKER_BOTS})</b>\n"
+            f"🤖 <b>Add Worker Bot(s) (Currently Added: {len(cur_bots)} • Unlimited)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
             "🔑 <b>Send the Bot Token(s) from @BotFather:</b>\n\n"
-            "• You can send <b>1 token</b> or <b>multiple tokens</b> (one per line) to add several bots at once!\n"
+            "• You can send <b>1 token</b> or <b>multiple tokens</b> (one per line) to add unlimited bots at once!\n"
             "• Example: <code>123456789:AAHxyz...</code>\n\n"
             "⚠️ <i>Make sure the worker bot is an <b>Admin</b> in your File Channel!</i>",
             reply_markup=cancel_kb,
@@ -842,10 +897,6 @@ async def multibot_callback_handler(client: Client, query: CallbackQuery):
         failed_reasons: List[str] = []
 
         for tok in found_tokens:
-            if len(cfg["bots"]) >= MAX_WORKER_BOTS:
-                failed_reasons.append(f"Max {MAX_WORKER_BOTS} limit reached")
-                break
-
             if any(b.get("token") == tok for b in cfg["bots"]):
                 failed_reasons.append("Token already added")
                 continue
@@ -897,11 +948,11 @@ async def multibot_callback_handler(client: Client, query: CallbackQuery):
             if added_names:
                 summary_lines.append(
                     f"✅ <b>Added {len(added_names)} Worker Bot(s):</b>\n• "
-                    + "\n• ".join(added_names)
+                    + "\n• ".join(added_names[:25])
                 )
             if failed_reasons:
                 summary_lines.append(
-                    f"⚠️ <b>Skipped/Failed:</b> {', '.join(failed_reasons)}"
+                    f"⚠️ <b>Skipped/Failed:</b> {', '.join(failed_reasons[:10])}"
                 )
             await safe_edit_text(status_msg, "\n\n".join(summary_lines))
             asyncio.create_task(_delete_after_delay(status_msg, 8))
