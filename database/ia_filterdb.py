@@ -41,7 +41,8 @@ db2 = (
 THIRD_DATABASE_URI = getattr(info, "THIRD_DATABASE_URI", "") or ""
 db3 = (
     AsyncIOMotorClient(THIRD_DATABASE_URI)[DATABASE_NAME]
-    if THIRD_DATABASE_URI and THIRD_DATABASE_URI not in [DATABASE_URI, SECOND_DATABASE_URI]
+    if THIRD_DATABASE_URI
+    and THIRD_DATABASE_URI not in [DATABASE_URI, SECOND_DATABASE_URI]
     else None
 )
 
@@ -243,6 +244,7 @@ async def get_search_results(
 
     try:
         from utils import parse_ultra_advanced_query
+
         parsed = parse_ultra_advanced_query(query_text)
     except Exception:
         parsed = {}
@@ -303,7 +305,7 @@ async def get_search_results(
 
     fetch_limit = max_results + 1
     files = []
-    
+
     # Query DB 1
     files.extend(
         await db[COLLECTION_NAME]
@@ -465,17 +467,18 @@ async def save_batch(media_list) -> Tuple[int, int, int]:
         except BulkWriteError as bwe:
             search_cache.clear()
             write_errors = bwe.details.get("writeErrors", [])
-            
+
             # Check if any error is a quota error
             is_quota = any(
-                err.get("code") == 8000 or "space quota" in str(err.get("errmsg", "")).lower()
+                err.get("code") == 8000
+                or "space quota" in str(err.get("errmsg", "")).lower()
                 for err in write_errors
             )
-            
+
             if is_quota:
                 ACTIVE_DB_INDEX = i + 1
-                continue # Retry with next DB
-                
+                continue  # Retry with next DB
+
             inserted = bwe.details.get("nInserted", 0)
             duplicates = sum(1 for err in write_errors if err.get("code") == 11000)
             return inserted, duplicates, len(media_list) - inserted - duplicates
