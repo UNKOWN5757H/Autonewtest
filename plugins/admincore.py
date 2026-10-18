@@ -1650,10 +1650,15 @@ async def bot_stats_cmd(bot: Client, message: Message):
             [
                 [
                     InlineKeyboardButton(
+                        "🗄️ Manage DB URLs (/datadb)", callback_data="ddb#main"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
                         "🔄 Refresh", callback_data="adm_stats_refresh"
                     ),
                     InlineKeyboardButton("🔐 Close", callback_data="close_data"),
-                ]
+                ],
             ]
         )
         if status_msg:
@@ -1683,10 +1688,15 @@ async def adm_stats_refresh_cb(client: Client, query: CallbackQuery):
             [
                 [
                     InlineKeyboardButton(
+                        "🗄️ Manage DB URLs (/datadb)", callback_data="ddb#main"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
                         "🔄 Refresh", callback_data="adm_stats_refresh"
                     ),
                     InlineKeyboardButton("🔐 Close", callback_data="close_data"),
-                ]
+                ],
             ]
         )
         await safe_edit_text(
