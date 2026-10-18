@@ -59,9 +59,17 @@ _KNOWN_USERS_RAM: Set[int] = set()
 
 # Safe optional imports
 try:
-    from database.ia_filterdb import Media
+    from database.ia_filterdb import (
+        DYNAMIC_DB_META,
+        Media,
+        get_all_dbs_stats,
+        is_multi_db_enabled,
+    )
 except Exception:
     Media = None
+    DYNAMIC_DB_META = []
+    get_all_dbs_stats = None
+    is_multi_db_enabled = None
 
 try:
     from database.plugin_dbs import plugin_db as _plugin_db
@@ -257,11 +265,13 @@ _DIRECT_CMD_ROUTES: Dict[str, Tuple[str, str]] = {
     "notfoundimg": ("plugins.custommessage", "set_notfound_img"),
     "customcaption": ("plugins.caption", "set_file_caption_cmd"),
     "captionplus": ("plugins.caption", "set_caption_plus_cmd"),
-    # Backup (plugins/backup.py)
+    # Backup & Multi-DB (plugins/backup.py & plugins/datadb.py)
     "dbbackup": ("plugins.backup", "db_backup_cmd"),
     "dbrestore": ("plugins.backup", "db_restore_cmd"),
     "dbstats": ("plugins.backup", "db_stats_cmd"),
     "dbschedule": ("plugins.backup", "db_schedule_cmd"),
+    "datadb": ("plugins.datadb", "datadb_command_handler"),
+    "bots": ("plugins.multibot", "bots_command_handler"),
     # Post Handler (plugins/post_handler.py)
     "post": ("plugins.post_handler", "post_command"),
     "editpost": ("plugins.post_handler", "edit_post_cmd"),
@@ -981,7 +991,7 @@ async def get_help_keyboard() -> InlineKeyboardMarkup:
             create_btn("💬 PM Auto Reply", callback_data="helps_pmautoreply"),
             create_btn("🧹 Clean Filename", callback_data="helps_cleanfile"),
         ],
-        [create_btn("💾 Backup", callback_data="helps_backup")],
+        [create_btn("💾 Database", callback_data="helps_backup")],
     ]
     custom_rows = await _get_custom_rows("help")
     if custom_rows:
@@ -1012,13 +1022,16 @@ async def get_about_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def get_stats_keyboard() -> InlineKeyboardMarkup:
+def get_stats_keyboard(back_cb: str = "about") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                create_btn("🔙 Back", callback_data="about"),
-                create_btn("🔄 Refresh", callback_data="rfrsh"),
-            ]
+                create_btn("🗄️ Manage DB URLs (/datadb)", callback_data="ddb#main", style=BTN_PRIMARY),
+            ],
+            [
+                create_btn("🔙 Back", callback_data=back_cb),
+                create_btn("🔄 Refresh", callback_data=f"rfrsh#{back_cb}"),
+            ],
         ]
     )
 
@@ -1362,8 +1375,50 @@ def get_help_section_keyboard(
     elif section_key == "helps_settings":
         rep_on = bool(st.get("rep_on", False))
         react_on = bool(st.get("react_on", True))
+        mb_on = bool(st.get("mb_on", True))
+        mb_count = int(st.get("mb_count", 0))
+        on_label = "✅ Multi Bot On" if mb_on else "Multi Bot On"
+        off_label = "🚫 Off" if not mb_on else "Off"
+
         rows.extend(
             [
+                # 🤖 All /bots (Multi-Bot Master-Worker) Buttons inside ⚙️ Settings:
+                [
+                    create_btn(
+                        on_label,
+                        callback_data="mb#on",
+                        style=BTN_SUCCESS if mb_on else None,
+                    ),
+                    create_btn(
+                        off_label,
+                        callback_data="mb#off",
+                        style=BTN_DANGER if not mb_on else None,
+                    ),
+                ],
+                [
+                    create_btn(
+                        "➕ Add Bot",
+                        callback_data="mb#add",
+                        style=BTN_PRIMARY,
+                    ),
+                    create_btn(
+                        f"📋 Bot list ({mb_count})",
+                        callback_data="mb#list#0",
+                        style=BTN_PRIMARY,
+                    ),
+                ],
+                [
+                    create_btn(
+                        "➖ Remove Bot",
+                        callback_data="mb#list#0",
+                    ),
+                    create_btn(
+                        "🗑️ Remove All Bot",
+                        callback_data="mb#remall_ask",
+                        style=BTN_DANGER,
+                    ),
+                ],
+                # Existing Settings Buttons:
                 [
                     create_btn(
                         f"repairmode: {'ON ✅' if rep_on else 'OFF ❌'}",
@@ -1457,8 +1512,50 @@ def get_help_section_keyboard(
             ]
         )
     elif section_key == "helps_backup":
+        ddb_on = bool(st.get("ddb_on", True))
+        ddb_count = int(st.get("ddb_count", 0))
+        ddb_on_label = "✅ Multi Database On" if ddb_on else "Multi Database On"
+        ddb_off_label = "🚫 Off" if not ddb_on else "Off"
+
         rows.extend(
             [
+                # 🗄️ All /datadb (Multi-Database) Buttons inside 💾 Backup:
+                [
+                    create_btn(
+                        ddb_on_label,
+                        callback_data="ddb#on",
+                        style=BTN_SUCCESS if ddb_on else None,
+                    ),
+                    create_btn(
+                        ddb_off_label,
+                        callback_data="ddb#off",
+                        style=BTN_DANGER if not ddb_on else None,
+                    ),
+                ],
+                [
+                    create_btn(
+                        "Add url",
+                        callback_data="ddb#add",
+                        style=BTN_PRIMARY,
+                    ),
+                    create_btn(
+                        f"url list ({ddb_count})",
+                        callback_data="ddb#list#0",
+                        style=BTN_PRIMARY,
+                    ),
+                ],
+                [
+                    create_btn(
+                        "Remove url",
+                        callback_data="ddb#list#0",
+                    ),
+                    create_btn(
+                        "Remove All url",
+                        callback_data="ddb#remall_ask",
+                        style=BTN_DANGER,
+                    ),
+                ],
+                # Existing Backup Buttons:
                 [
                     create_btn("dbbackup", callback_data="hact#cmd#dbbackup"),
                     create_btn("dbrestore", callback_data="hact#cmd#dbrestore"),
@@ -1615,6 +1712,25 @@ async def get_channels_page(
 
 
 async def build_status_text() -> str:
+    """
+    Connected directly to the Live Multi-Database Stats Engine (`admincore._build_db_stats_text`
+    and `ia_filterdb.get_all_dbs_stats`) so the Status button in About & Utilities shows
+    every connected `/datadb` database, file counts, used storage, and free storage!
+    """
+    try:
+        from plugins.admincore import _build_db_stats_text
+
+        return await _build_db_stats_text()
+    except Exception:
+        pass
+
+    try:
+        from plugins.datadb import load_datadb_config
+
+        await load_datadb_config()
+    except Exception:
+        pass
+
     total_files = 0
     users = 0
     chats = 0
@@ -1622,18 +1738,49 @@ async def build_status_text() -> str:
     free = "512 MB"
 
     try:
-        if Media is not None:
-            col = getattr(Media, "collection", Media)
-            total_files = await col.count_documents({})
+        users, chats = await asyncio.gather(
+            _db.total_users_count(), _db.total_chat_count()
+        )
     except Exception:
         pass
 
+    if callable(get_all_dbs_stats):
+        try:
+            st = await get_all_dbs_stats()
+            total_files = int(st.get("total_files", 0))
+            monsize = get_size(st.get("total_used_bytes", 0))
+            free = get_size(st.get("total_free_bytes", 0))
+            all_dbs = st.get("all_dbs", [])
+            lines = [
+                f"📊 <b>Multi-Database Cluster Status ({len(all_dbs)} DBs)</b>",
+                "━━━━━━━━━━━━━━━━━━━━━",
+                f"📁 <b>Combined Total Files:</b> <code>{total_files:,}</code>",
+                f"👤 <b>Total Users:</b> <code>{users:,}</code>",
+                f"👥 <b>Total Chats:</b> <code>{chats:,}</code>",
+                f"💾 <b>Total Used Storage:</b> <code>{monsize}</code>",
+                f"🆓 <b>Total Free Storage:</b> <code>{free}</code>",
+                "━━━━━━━━━━━━━━━━━━━━━",
+            ]
+            for d in all_dbs:
+                idx = d.get("index", 1)
+                lbl = html.escape(str(d.get("label", f"DB {idx}")))
+                f_cnt = d.get("files", 0)
+                u_str = get_size(d.get("used_bytes", 0))
+                st_str = d.get("status", "🟢 Connected")
+                lines.append(
+                    f"🗄️ <b>DB #{idx} ({lbl}):</b> <code>{f_cnt:,} files</code> | <code>{u_str}</code> ({st_str})"
+                )
+            return "\n".join(lines)
+        except Exception:
+            pass
+
     try:
-        users = await _db.total_users_count()
-        chats = await _db.total_chat_count()
+        if Media is not None:
+            col = getattr(Media, "collection", Media)
+            total_files = await col.count_documents({})
         raw_size = await _db.get_db_size()
         monsize = get_size(raw_size)
-        free = get_size(536870912 - raw_size)
+        free = get_size(max(0, 536870912 - raw_size))
     except Exception:
         pass
 
@@ -1646,9 +1793,9 @@ async def build_status_text() -> str:
 
     return (
         f"📊 <b>Bot Database Status</b>\n\n"
-        f"📁 <b>Total Files:</b> <code>{total_files}</code>\n"
-        f"👤 <b>Total Users:</b> <code>{users}</code>\n"
-        f"👥 <b>Total Chats:</b> <code>{chats}</code>\n"
+        f"📁 <b>Total Files:</b> <code>{total_files:,}</code>\n"
+        f"👤 <b>Total Users:</b> <code>{users:,}</code>\n"
+        f"👥 <b>Total Chats:</b> <code>{chats:,}</code>\n"
         f"💾 <b>Used Storage:</b> <code>{monsize}</code>\n"
         f"🆓 <b>Free Storage:</b> <code>{free}</code>"
     )
@@ -1712,13 +1859,13 @@ async def build_interactive_help_section(
         "helps_delete": ("DELETE_TXT", "🗑️ <b>Delete Help</b>"),
         "helps_promotions": ("PROMOTIONS_TXT", "📢 <b>Promotions Help</b>"),
         "helps_index": ("INDEX_TXT", "📚 <b>Index Help</b>"),
-        "helps_settings": ("SETTINGS_TXT", "⚙️ <b>Settings Help</b>"),
+        "helps_settings": ("SETTINGS_TXT", "⚙️ <b>Settings & Multi-Bot Help</b>"),
         "helps_connections": ("CONNECTIONS_TXT", "🌐 <b>Connections Help</b>"),
         "helps_utilities": ("UTILITIES_TXT", "📊 <b>Utilities Help</b>"),
         "helps_custommessages": ("CUSTOMMESSAGES_TXT", "💬 <b>Custom Messages</b>"),
         "helps_posthand": ("POSTHAND_TXT", "📝 <b>Post Handle Help</b>"),
         "helps_customcaption": ("CUSTOMCAPTION_TXT", "📝 <b>Custom Captions Help</b>"),
-        "helps_backup": ("BACKUP_TXT", "💾 <b>Backup Help</b>"),
+        "helps_backup": ("BACKUP_TXT", "💾 <b>Backup & Multi-Database Help</b>"),
         "helps_pmautoreply": ("PMAUTOREPLY_TXT", "💬 <b>PM Auto Reply Help</b>"),
     }
 
@@ -1888,12 +2035,54 @@ async def build_interactive_help_section(
     elif section_key == "helps_settings":
         rep_on = bool(getattr(info, "REPAIR_MODE", False))
         react_on = bool(getattr(info, "ENABLE_REACTION", True))
-        state = {"rep_on": rep_on, "react_on": react_on}
+        mb_on = True
+        mb_count = 0
+        try:
+            from plugins.multibot import load_multibot_config
+
+            mb_cfg = await load_multibot_config()
+            mb_on = bool(mb_cfg.get("enabled", True))
+            mb_count = len(mb_cfg.get("bots", []))
+        except Exception:
+            pass
+
+        state = {
+            "rep_on": rep_on,
+            "react_on": react_on,
+            "mb_on": mb_on,
+            "mb_count": mb_count,
+        }
         base_text += (
             f"\n\n━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎛️ <b>Live System Status:</b>\n"
+            f"🎛️ <b>Live System & Multi-Bot Status:</b>\n"
+            f"• <b>Multi-Bot Mode (<code>/bots</code>):</b> <code>{'ON ✅' if mb_on else 'OFF ❌'}</code> (<code>{mb_count} Workers</code>)\n"
             f"• <b>Repair / Maintenance Mode:</b> <code>{'ON ✅' if rep_on else 'OFF ❌'}</code>\n"
             f"• <b>Auto Reactions:</b> <code>{'ON ✅' if react_on else 'OFF ❌'}</code>"
+        )
+
+    elif section_key == "helps_backup":
+        ddb_on = True
+        ddb_count = 0
+        try:
+            from plugins.datadb import load_datadb_config
+
+            ddb_cfg = await load_datadb_config()
+            ddb_on = bool(ddb_cfg.get("enabled", True))
+            ddb_count = len(ddb_cfg.get("urls", []))
+        except Exception:
+            if callable(is_multi_db_enabled):
+                ddb_on = is_multi_db_enabled()
+            ddb_count = len(DYNAMIC_DB_META) if DYNAMIC_DB_META else 0
+
+        state = {
+            "ddb_on": ddb_on,
+            "ddb_count": ddb_count,
+        }
+        base_text += (
+            f"\n\n━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🗄️ <b>Live Multi-Database Status (<code>/datadb</code>):</b>\n"
+            f"• <b>Multi-Database Mode:</b> <code>{'ON ✅' if ddb_on else 'OFF ❌'}</code>\n"
+            f"• <b>Added Extra DB URLs:</b> <code>{ddb_count} (Unlimited)</code>"
         )
 
     return base_text, get_help_section_keyboard(section_key, state)
@@ -2674,13 +2863,23 @@ async def _handle_help_cmd_button(client: Client, query: CallbackQuery, cmd_name
         return await transition_ui_message(client, query.message, text, markup)
 
     if cmd_clean in ["stats", "total"]:
-        await safe_answer(query, "📊 Loading database stats...")
+        await safe_answer(query, "📊 Loading Multi-Database live stats...")
         status_text = await build_status_text()
         return await transition_ui_message(
             client,
             query.message,
             status_text,
-            get_back_close_keyboard("helps_utilities"),
+            get_stats_keyboard("helps_utilities"),
+        )
+
+    if cmd_clean == "dbstats":
+        await safe_answer(query, "📊 Loading Multi-Database live stats...")
+        status_text = await build_status_text()
+        return await transition_ui_message(
+            client,
+            query.message,
+            status_text,
+            get_stats_keyboard("helps_backup"),
         )
 
     if cmd_clean in ["filter", "addfilter", "filterimage"]:
@@ -3370,7 +3569,7 @@ async def interactive_help_actions_cb(client: Client, query: CallbackQuery):
 # ============================================================
 @Client.on_callback_query(
     filters.regex(
-        r"^(close_data|channels_page#.*|alertmessage.*|pages|start|help|about|helps_.*|stats|rfrsh)$"
+        r"^(close_data|channels_page#.*|alertmessage.*|pages|start|help|about|helps_.*|stats|rfrsh(?:#.*)?)$"
     )
 )
 async def ui_cb_handler(client: Client, query: CallbackQuery):
@@ -3394,7 +3593,8 @@ async def ui_cb_handler(client: Client, query: CallbackQuery):
         return await safe_answer(query, "🛠️ Bot is under maintenance!", show_alert=True)
 
     if (
-        query.data in ["help", "about", "stats", "rfrsh"]
+        query.data in ["help", "about", "stats"]
+        or query.data.startswith("rfrsh")
         or query.data.startswith("helps_")
         or query.data.startswith("channels_page#")
     ):
@@ -3496,18 +3696,24 @@ async def ui_cb_handler(client: Client, query: CallbackQuery):
                 getattr(info, "ABOUT_IMG", None),
             )
 
-        elif query.data in ["stats", "rfrsh"]:
+        elif query.data == "stats" or query.data.startswith("rfrsh"):
+            back_target = "about"
+            if "#" in query.data:
+                back_target = query.data.split("#", 1)[1] or "about"
             await safe_answer(
                 query,
                 (
-                    "Refreshing Database Stats..."
-                    if query.data == "rfrsh"
-                    else "Loading Stats..."
+                    "Refreshing Multi-Database Stats..."
+                    if query.data.startswith("rfrsh")
+                    else "Loading Multi-Database Stats..."
                 ),
             )
             status_text = await build_status_text()
             await transition_ui_message(
-                client, query.message, status_text, get_stats_keyboard()
+                client,
+                query.message,
+                status_text,
+                get_stats_keyboard(back_target),
             )
 
         elif query.data.startswith("helps_"):
@@ -3519,3 +3725,61 @@ async def ui_cb_handler(client: Client, query: CallbackQuery):
 
     except Exception as e:
         logger.error(f"UI Callback Handler Error: {e}")
+
+
+# ============================================================
+# 💬 PM AUTO-REPLY INTERCEPTOR (RUNS AFTER COMMANDS & LISTENERS)
+# ============================================================
+@Client.on_message(filters.private & filters.incoming, group=4)
+async def pm_auto_reply(client: Client, message: Message):
+    if not message.from_user or message.outgoing:
+        return
+    if is_waiting_for_cmd_input(message.chat.id):
+        return
+    if message.text and message.text.startswith("/"):
+        return
+
+    # Do not auto-reply if Admin forwarded a channel message for indexing
+    uid = message.from_user.id
+    is_admin = await is_global_admin(uid)
+    if is_admin and (
+        getattr(message, "forward_from_chat", None)
+        or getattr(message, "forward_origin", None)
+    ):
+        return
+
+    if await is_user_banned(uid):
+        return
+
+    pm_cfg = await get_pm_settings()
+    if not pm_cfg.get("enabled", True):
+        return
+    if is_admin and not pm_cfg.get("reply_admins", True):
+        return
+
+    reply_txt = pm_cfg.get("text") or "<b>🚫 Don't Message Here!</b>"
+    reply_img = pm_cfg.get("image")
+    markup = get_pm_autoreply_keyboard(
+        pm_cfg.get("button_text"),
+        pm_cfg.get("button_url"),
+        pm_cfg.get("button_color", "red"),
+    )
+
+    if reply_img and str(reply_img).strip().lower() not in ["none", "null", ""]:
+        try:
+            await message.reply_photo(
+                photo=reply_img,
+                caption=reply_txt,
+                reply_markup=markup,
+                parse_mode=enums.ParseMode.HTML,
+            )
+            return
+        except Exception:
+            pass
+
+    await safe_reply_text(
+        message,
+        reply_txt,
+        reply_markup=markup,
+        parse_mode=enums.ParseMode.HTML,
+    )
