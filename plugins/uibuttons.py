@@ -1026,7 +1026,11 @@ def get_stats_keyboard(back_cb: str = "about") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                create_btn("🗄️ Manage DB URLs (/datadb)", callback_data="ddb#main", style=BTN_PRIMARY),
+                create_btn(
+                    "🗄️ Manage DB URLs (/datadb)",
+                    callback_data="ddb#main",
+                    style=BTN_PRIMARY,
+                ),
             ],
             [
                 create_btn("🔙 Back", callback_data=back_cb),
